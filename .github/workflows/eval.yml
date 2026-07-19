@@ -1,16 +1,11 @@
 name: LangSmith Evaluation
 
-# Dispara cuando cambia el agente, las tools o los prompts.
-# Manual (workflow_dispatch) para correr bajo demanda sin costo innecesario.
+# Solo manual (botón "Run workflow"): la evaluación consume tokens de OpenAI
+# y requiere las llaves como secrets del repo (Settings → Secrets → Actions:
+# OPENAI_API_KEY, UCACUE_API_KEY, UCACUE_API_URL, LANGCHAIN_API_KEY, MODEL_NAME).
+# Correrla en cada push gastaría créditos y fallaría sin secrets configurados.
 on:
-  push:
-    branches: [main, master]
-    paths:
-      - "src/agent/**"
-      - "src/tools/**"
-      - "src/evaluation/**"
-      - "evaluate.py"
-  workflow_dispatch:   # botón "Run workflow" en GitHub Actions
+  workflow_dispatch:
 
 jobs:
   evaluate:
