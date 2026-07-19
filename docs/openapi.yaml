@@ -1,0 +1,1874 @@
+openapi: 3.0.3
+
+info:
+  title: API Historial Académico — UCACUE
+  version: 0.1.0
+  description: |
+    API REST que consume Power BI executeQueries para servir indicadores
+    del dashboard académico a la aplicación móvil de la UCACUE.
+
+    **Autenticación:** todas las rutas requieren el header `x-api-key`.
+
+    **Periodos académicos:** se identifican con un código de 5 dígitos
+    `AAAAN` donde `N=1` es ciclo SIERRA y `N=2` es ciclo COSTA
+    (ej: `20261` = Sierra 2026, `20252` = Costa 2025).
+    En los desplegables de Swagger, los periodos Costa se muestran por año
+    académico: `Costa - 2026` corresponde al código `20252` porque el ciclo
+    Costa inicia en el año calendario 2025 y se reporta como `AÑO_1 = 2026`.
+
+    **Nomenclatura de facultades:** a partir del ciclo 2026 la universidad
+    usa el campo `CARRERAFACULTAD` (ej: `FACULTAD DE CIENCIAS SOCIALES`)
+    en lugar de `CARRERAUNIDAD`. El filtro `?facultad=` acepta este nuevo
+    nombre en todos los endpoints que permiten filtrado por unidad académica.
+
+    **Resolución de carreras para consultas en lenguaje natural:** cuando el
+    usuario mencione una carrera por descripción aproximada, primero consulte
+    `/api/carreras?selector=true&buscar={texto}`. Muestre las opciones
+    devueltas al usuario y use `nombre_carrera` o `codigo_carrera` solo
+    después de que el usuario confirme la opción correcta. No envíe textos
+    aproximados directamente a endpoints analíticos.
+  contact:
+    name: Jefatura de Analítica de Datos — UCACUE
+    email: jdatosanalitica@ucacue.edu.ec
+
+servers:
+  - url: https://powerbi-middleware-ucacue-cff3g2csgpf9ebdz.centralus-01.azurewebsites.net
+    description: Producción — middleware Azure
+
+security:
+  - ApiKeyAuth: []
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Componentes reutilizables
+# ──────────────────────────────────────────────────────────────────────────────
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: Clave secreta configurada en `API_SECRET_KEY` del servidor.
+
+  parameters:
+    periodo:
+      name: periodo
+      in: query
+      description: |
+        Periodo académico en formato `AAAAN` (5 dígitos).
+        `N=1` = ciclo SIERRA, `N=2` = ciclo COSTA.
+        Se convierte internamente a `AÑO_1` + `TIPO_CICLO` para filtrar
+        las medidas del dashboard.
+      required: false
+      schema:
+        type: string
+        pattern: '^\d{5}$'
+        example: "20261"
+    periodoAnterior:
+      name: periodo_anterior
+      in: query
+      description: |
+        Periodo académico anterior para comparar. En Swagger se muestran
+        nombres visibles por año académico; el API también acepta códigos
+        `PERIODONUMERICO`. Por ejemplo, `Costa - 2026` = `20252` y
+        `Costa - 2025` = `20242`.
+        Si se omite, se calcula restando un año al periodo seleccionado y
+        conservando el ciclo (`20261` → `20251`, `20252` → `20242`).
+      required: false
+      schema:
+        type: string
+        enum:
+          - "Sierra - 2026"
+          - "Costa - 2026"
+          - "Sierra - 2025"
+          - "Costa - 2025"
+          - "Sierra - 2024"
+          - "Costa - 2024"
+        example: "Sierra - 2025"
+    fechaCorte:
+      name: fecha_corte
+      in: query
+      description: |
+        Fecha de referencia en formato `YYYY-MM-DD`. El endpoint usa solo
+        el día/mes de esta fecha para comparar ambos periodos hasta el mismo
+        corte calendario. Si se omite, usa la fecha local del servidor.
+      required: false
+      schema:
+        type: string
+        format: date
+        example: "2026-06-12"
+    ano:
+      name: ano
+      in: query
+      description: Año académico de 4 dígitos. Alternativa a `?periodo=`.
+      required: false
+      schema:
+        type: string
+        pattern: '^\d{4}$'
+        example: "2026"
+    ciclo:
+      name: ciclo
+      in: query
+      description: Tipo de ciclo. Alternativa a `?periodo=`.
+      required: false
+      schema:
+        type: string
+        enum: [SIERRA, COSTA]
+    sede:
+      name: sede
+      in: query
+      description: Nombre de la sede universitaria (`CARRERASEDE`).
+      required: false
+      schema:
+        type: string
+        example: "MATRIZ CUENCA"
+    facultad:
+      name: facultad
+      in: query
+      description: |
+        Nombre de la facultad (`CARRERAFACULTAD`).
+        Nomenclatura vigente desde el ciclo 2026.
+        Ejemplo: `FACULTAD DE CIENCIAS SOCIALES`.
+      required: false
+      schema:
+        type: string
+        example: "FACULTAD DE CIENCIAS SOCIALES"
+    top:
+      name: top
+      in: query
+      description: Límite de filas devueltas (default 20, máximo 50).
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 20
+
+  responses:
+    Unauthorized:
+      description: API key ausente o inválida.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            ok: false
+            error: "API key inválida o ausente. Incluir header: x-api-key"
+    BadRequest:
+      description: Parámetro de consulta inválido.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    BadGateway:
+      description: Error al consultar Power BI Service.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    ModalidadId:
+      type: string
+      description: |
+        Nombre visible de modalidad académica para Swagger. El API lo convierte internamente a `MODALIDADID`.
+        `TODOS` equivale a vacío: no filtra por modalidad.
+        - DISTANCIA -> `D`
+        - HÍBRIDO -> `H`
+        - EN LÍNEA -> `O`
+        - PRESENCIAL -> `P`
+        - SEMIPRESENCIAL -> `S`
+        - MODALIDAD DUAL -> `U`
+        - VIRTUAL -> `V`
+      enum:
+        - TODOS
+        - DISTANCIA
+        - HÍBRIDO
+        - EN LÍNEA
+        - PRESENCIAL
+        - SEMIPRESENCIAL
+        - MODALIDAD DUAL
+        - VIRTUAL
+      example: PRESENCIAL
+
+    ErrorResponse:
+      type: object
+      required: [ok, error]
+      properties:
+        ok:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+
+    # ── /api/matriculas-carrera ───────────────────────────────────────────────
+    MatriculaCarrera:
+      type: object
+      description: Desglose de matrícula por carrera y sede.
+      properties:
+        carreranombre:
+          type: string
+          description: Nombre visible de la carrera (`CARRERANOMBRE`).
+          example: "MEDICINA"
+        carrerasede:
+          type: string
+          description: Sede donde se oferta la carrera (`CARRERASEDE`).
+          example: "MATRIZ CUENCA"
+        inscritos:
+          type: number
+          description: Total de inscritos de la carrera.
+        nuevos:
+          type: number
+          description: Alumnos nuevos matriculados.
+        convalidados:
+          type: number
+          description: Matrículas por convalidación.
+        repetidores:
+          type: number
+          description: Repetidores ajustados del ciclo.
+
+    # ── /api/inscripciones-historico ──────────────────────────────────────────
+    HistoricoRow:
+      type: object
+      description: Métricas agregadas por periodo académico para construir series temporales.
+      properties:
+        periodo:
+          type: string
+          description: Código `PERIODONUMERICO` del periodo académico.
+          example: "20261"
+        inscritos:
+          type: number
+          description: Total de inscritos del periodo (`Total_Inscritos`).
+        pagados:
+          type: number
+          description: Total de pagos o matrículas pagadas del periodo (`Total_Pagos`).
+        nuevos:
+          type: number
+          description: Total de alumnos nuevos matriculados del periodo (`Total_Alumnos_Nuevos`).
+        tasa_conversion:
+          type: number
+          format: float
+          description: Tasa de conversión de inscripción a pago/matrícula. Valor decimal entre 0 y 1.
+
+    # ── /api/comparativo-periodo ─────────────────────────────────────────────
+    ComparativoPeriodoRow:
+      type: object
+      properties:
+        periodo:
+          type: string
+          description: Código PERIODONUMERICO evaluado.
+          example: "20261"
+        tipo:
+          type: string
+          enum: [actual, anterior]
+          description: Indica si la fila corresponde al periodo solicitado o al periodo comparativo.
+        fecha_corte:
+          type: string
+          format: date
+          description: Fecha de corte aplicada al periodo de la fila.
+          example: "2026-06-12"
+        inscritos:
+          type: number
+          description: Distinct count de `CODIGO_UNICO` con `FECHAINSCRIPCION` no vacía y menor/igual al corte.
+        matriculados:
+          type: number
+          description: Alumnos nuevos matriculados en ciclo 1, no retirados, sin convalidación, cohorte igual al periodo y pago hasta el corte.
+        repetidores:
+          type: number
+          description: Repetidores de ciclo 1, no retirados, con pago hasta el corte y periodo mayor a cohorte.
+        reservas:
+          type: number
+          description: Reservas históricas de ciclo 1, cohorte igual al periodo y reserva hasta el corte.
+
+    ComparativoPeriodoFiltros:
+      type: object
+      properties:
+        periodoActual:
+          type: string
+          description: Periodo actual normalizado a código `PERIODONUMERICO`.
+          example: "20261"
+        periodoAnterior:
+          type: string
+          description: Periodo anterior normalizado a código `PERIODONUMERICO`.
+          example: "20251"
+        cutoffMonth:
+          type: integer
+          example: 6
+        cutoffDay:
+          type: integer
+          example: 12
+        ciclo:
+          type: string
+          nullable: true
+          enum: [SIERRA, COSTA]
+        sedes:
+          type: array
+          items:
+            type: string
+          description: Sedes filtradas. Vacío significa todas.
+        unidades:
+          type: array
+          items:
+            type: string
+          description: Unidades académicas antiguas (`CARRERAUNIDAD`) filtradas. Vacío significa todas.
+        unidadesAcademicas:
+          type: array
+          items:
+            type: string
+          description: Unidades académicas del campo `UNIDAD_ACADEMICA` filtradas. Vacío significa todas.
+        carreras:
+          type: array
+          items:
+            type: string
+          description: Códigos de carrera (`CARRERAID`) filtrados. Vacío significa todas. Para obtenerlos desde una descripción del usuario, primero use `/api/carreras?selector=true&buscar={texto}` y confirme la opción con el usuario.
+        carrerasNombre:
+          type: array
+          items:
+            type: string
+          description: Nombres visibles de carrera (`CARRERANOMBRE`) filtrados. Vacío significa todas. Para obtener el nombre exacto desde lenguaje natural, primero use `/api/carreras?selector=true&buscar={texto}` y confirme la opción con el usuario.
+        facultades:
+          type: array
+          items:
+            type: string
+          description: Facultades filtradas. Vacío significa todas.
+        fechaReferencia:
+          type: string
+          format: date
+          example: "2026-06-12"
+        fechaCorte:
+          type: string
+          description: Día/mes aplicado a ambos periodos en formato `MM-DD`.
+          example: "06-12"
+        fechasCortePorPeriodo:
+          type: object
+          additionalProperties:
+            type: string
+            format: date
+          description: Fecha de corte efectiva aplicada a cada periodo normalizado.
+          example:
+            "20252": "2026-06-12"
+            "20242": "2025-06-12"
+
+    # ── /api/estudiantes ──────────────────────────────────────────────────────
+    EstudiantesData:
+      type: object
+      description: |
+        KPIs académicos de estudiantes y embudo de matrícula. Este schema consolida
+        inscritos, reservas, matrículas nuevas, repetidores, convalidados, pagos
+        pendientes, tasas de conversión, promedio de días de pago y tasa de pérdida.
+      properties:
+        total_inscritos:
+          type: number
+          description: Total de estudiantes inscritos según la medida `Total_Inscritos`.
+        reservas:
+          type: number
+          description: Total de reservas del embudo de conversión según `Total_Reservas_Embudo`.
+        matriculas_nuevas:
+          type: number
+          description: Total de alumnos nuevos matriculados según `Total_Alumnos_Nuevos`.
+        total_repetidores_regulares:
+          type: number
+          description: Total de estudiantes repetidores regulares.
+        total_repetidores_capacitaciones_medicas:
+          type: number
+          description: Total de repetidores por capacitaciones médicas.
+        matriculas_convalidadas:
+          type: number
+          description: Total de matrículas convalidadas de la tarjeta del dashboard (`Total_Convalidados_nuevos1_tarjeta`).
+        matriculas_convalidadas_ciclo_1:
+          type: number
+          description: Total de convalidados del ciclo 1 usando `Total_Convalidados_nuevos`.
+        pagos_pendientes_tarjeta:
+          type: number
+          nullable: true
+          description: Pagos pendientes directos de la tarjeta del dashboard (`PAGOS_PENDIENTES_tarjeta`).
+        matriculas_pendientes:
+          type: number
+          nullable: true
+          description: Matrículas pendientes calculadas como `Total_Reservas_Embudo - Total_Alumnos_Nuevos - Total_Convalidados_nuevos`.
+        tasa_conversion_inscrito_matriculado:
+          type: number
+          format: float
+          description: Tasa de conversión de inscritos a matriculados. Valor decimal entre 0 y 1.
+        tasa_conversion_reservas_matriculado:
+          type: number
+          format: float
+          description: Tasa de conversión de reservas a matrículas. Valor decimal entre 0 y 1.
+        promedio_dias_inscrito_matriculado:
+          type: number
+          format: float
+          description: Promedio de días entre inscripción y pago/matrícula.
+        tasa_perdida:
+          type: number
+          format: float
+          nullable: true
+          description: Tasa de pérdida de estudiantes.
+    # ── /api/facultades ───────────────────────────────────────────────────────
+    FacultadRow:
+      type: object
+      properties:
+        carrerafacultad:
+          type: string
+          example: "FACULTAD DE CIENCIAS SOCIALES"
+        inscritos:
+          type: number
+        pagados:
+          type: number
+        nuevos:
+          type: number
+        repetidores:
+          type: number
+
+    # ── /api/cohortes ─────────────────────────────────────────────────────────
+    CohorteResumenRow:
+      type: object
+      properties:
+        cohorte:
+          type: integer
+          description: Periodo numérico de inicio del cohorte (ej. 20252).
+          example: 20251
+        nro_inicial:
+          type: integer
+          description: Estudiantes matriculados en el primer periodo del cohorte.
+          example: 37
+        nro_actual:
+          type: integer
+          description: Estudiantes del cohorte activos en el periodo más reciente.
+          example: 31
+        tasa_perdida:
+          type: number
+          format: float
+          nullable: true
+          description: |
+            (nro_actual − nro_inicial) / nro_inicial.
+            Negativo indica pérdida. 0 si el cohorte está en su primer periodo.
+          example: -0.162
+
+    CohorteMatrizRow:
+      type: object
+      properties:
+        periodo:
+          type: string
+          description: Periodo académico en el que se mide la retención (AAAAN).
+          example: "20252"
+        cohorte:
+          type: integer
+          description: Cohorte al que pertenecen los estudiantes contados.
+          example: 20251
+        estudiantes:
+          type: integer
+          description: |
+            Conteo de estudiantes activos del cohorte en ese periodo
+            (medida DistinctDocs_SinHomologación con filtros de RETIRADO, CONVALIDACION, MODOMATRICULA).
+          example: 31
+
+    # ── /api/carreras ─────────────────────────────────────────────────────────
+    CarreraRow:
+      type: object
+      description: |
+        Fila completa del catálogo de carreras con métricas agregadas.
+        Use esta vista cuando se necesite inspeccionar sede, facultad, unidad
+        académica, inscritos o pagados por carrera. Para resolver una carrera
+        ambigua antes de llamar otros endpoints, prefiera `selector=true`.
+      properties:
+        CARRERAID:
+          type: string
+          description: Código técnico interno de carrera (`CARRERAID`). Puede haber varios códigos para una misma carrera visible.
+          example: "17001"
+        CARRERANOMBRE:
+          type: string
+          description: Nombre visible de la carrera (`CARRERANOMBRE`). Es el valor recomendado para filtros `carrera_nombre`.
+          example: "MEDICINA"
+        CARRERASEDE:
+          type: string
+          description: Sede donde se oferta la carrera (`CARRERASEDE`).
+          example: "MATRIZ CUENCA"
+        CARRERAUNIDAD:
+          type: string
+          description: Unidad académica histórica asociada a la carrera (`CARRERAUNIDAD`).
+          example: "UNIDAD ACADÉMICA DE SALUD Y BIENESTAR"
+        CARRERAFACULTAD:
+          type: string
+          description: Facultad vigente asociada a la carrera (`CARRERAFACULTAD`).
+          example: "FACULTAD DE CIENCIAS DE LA SALUD"
+        inscritos:
+          type: number
+          description: Total de inscritos calculado por Power BI para los filtros aplicados.
+          example: 248
+        pagados:
+          type: number
+          description: Total de pagos o matrículas pagadas calculado por Power BI para los filtros aplicados.
+          example: 220
+
+    CarreraSelectorRow:
+      type: object
+      description: |
+        Opción simplificada para resolver carreras desde lenguaje natural.
+        Muestre estas opciones al usuario cuando la búsqueda pueda ser ambigua.
+        Use `nombre_carrera` en endpoints que aceptan `carrera_nombre` y
+        `codigo_carrera` en endpoints que aceptan `carrera`.
+      properties:
+        codigo_carrera:
+          type: string
+          description: Código principal encontrado para la carrera. Úselo en endpoints que filtran por `carrera`, como `/api/cohortes`, solo después de confirmación del usuario.
+          example: "17001"
+        nombre_carrera:
+          type: string
+          description: Nombre visible exacto confirmado. Úselo como `carrera_nombre` en `/api/estudiantes` y `/api/comparativo-periodo`.
+          example: "MEDICINA"
+        codigos_carrera:
+          type: array
+          items:
+            type: string
+          description: Códigos internos agrupados bajo el mismo nombre visible. Sirven para auditoría o para detectar que una misma carrera tiene más de un código.
+          example: ["17001", "17002"]
+
+    # ── /api/periodos ─────────────────────────────────────────────────────────
+    PeriodoRow:
+      type: object
+      properties:
+        periodo:
+          type: string
+          description: Código PERIODONUMERICO (ej. "20261").
+          example: "20261"
+        inicio_periodo:
+          type: string
+          format: date-time
+          nullable: true
+        fin_periodo:
+          type: string
+          format: date-time
+          nullable: true
+        inscripciones_inicio:
+          type: string
+          format: date-time
+          nullable: true
+        inscripciones_fin:
+          type: string
+          format: date-time
+          nullable: true
+        matricula_inicio:
+          type: string
+          format: date-time
+          nullable: true
+        matricula_fin:
+          type: string
+          format: date-time
+          nullable: true
+        inicio_clases:
+          type: string
+          format: date-time
+          nullable: true
+        fin_clases:
+          type: string
+          format: date-time
+          nullable: true
+
+    # ── /api/sedes ────────────────────────────────────────────────────────────
+    SedeRow:
+      type: object
+      properties:
+        carrerasede:
+          type: string
+          example: "MATRIZ CUENCA"
+        inscritos:
+          type: number
+        pagados:
+          type: number
+        carreras:
+          type: number
+          description: Número de carreras ofertadas en la sede.
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Rutas
+# ──────────────────────────────────────────────────────────────────────────────
+paths:
+
+  /api/matriculas-carrera:
+    get:
+      summary: Matrículas por carrera con desglose de tipos de estudiante
+      description: |
+        Devuelve un ranking de carreras con inscritos, alumnos nuevos,
+        convalidados y repetidores. Equivale al gráfico "MATRICULAS POR
+        CARRERA" del dashboard de Power BI.
+
+        Úselo para preguntas como:
+        - ¿Qué carreras tienen más inscritos?
+        - ¿Cuántos nuevos, convalidados y repetidores tiene cada carrera?
+        - ¿Cuál es el ranking de matrículas por carrera en una sede o facultad?
+
+        Para KPIs agregados de estudiantes use `/api/estudiantes`; este
+        endpoint devuelve desglose por carrera.
+        Si el usuario pregunta por una carrera específica usando texto
+        aproximado, primero resuelva el nombre con
+        `/api/carreras?selector=true&buscar={texto}`, confirme la opción con
+        el usuario y luego compare contra el campo `carreranombre` devuelto
+        por este endpoint.
+
+        El periodo se convierte a `AÑO_1` + `TIPO_CICLO` para filtrar
+        las medidas del dashboard.
+      operationId: getMatriculasCarrera
+      tags: [Matrícula]
+      parameters:
+        - name: periodo
+          in: query
+          description: Periodo académico. En Swagger se muestra el nombre visible; el API también acepta código `PERIODONUMERICO`.
+          required: false
+          schema:
+            type: string
+            enum:
+              - "Todos"
+              - "Sierra - 2026"
+              - "Costa - 2026"
+              - "Sierra - 2025"
+              - "Costa - 2025"
+              - "Sierra - 2024"
+              - "Costa - 2024"
+            default: "Sierra - 2026"
+        - name: sede
+          in: query
+          description: Sede universitaria. `Todos` = todas las sedes.
+          required: false
+          schema:
+            type: string
+            enum:
+              - "Todos"
+              - "MATRIZ CUENCA"
+              - "SEDE AZOGUES"
+              - "SEDE MACAS"
+              - "EXTENSION SAN PABLO DE LA TRONCAL"
+              - "EXTENSION CAÑAR"
+            default: "Todos"
+        - name: facultad
+          in: query
+          description: Facultad (`CARRERAFACULTAD`). `Todos` = todas las facultades.
+          required: false
+          schema:
+            type: string
+            enum:
+              - "Todos"
+              - "FACULTAD DE CIENCIAS AGROPECUARIAS"
+              - "FACULTAD DE CIENCIAS DE LA SALUD"
+              - "FACULTAD DE CIENCIAS ECONÓMICAS Y EMPRESARIALES"
+              - "FACULTAD DE CIENCIAS SOCIALES"
+              - "FACULTAD DE CRIMINOLOGÍA Y CIENCIAS FORENSES"
+              - "FACULTAD DE EDUCACIÓN"
+              - "FACULTAD DE FORMACIÓN TÉCNICA Y TECNOLÓGICA SUPERIOR"
+              - "FACULTAD DE INFORMÁTICA, CIENCIAS DE LA COMPUTACIÓN, E INNOVACIÓN TECNOLÓGICA"
+              - "FACULTAD DE INGENIERÍA, INDUSTRIA Y CONSTRUCCIÓN"
+              - "UNIDAD DE CAPACITACION DE CIENCIAS MEDICAS"
+            default: "Todos"
+        - name: modalidad
+          in: query
+          description: Modalidad académica. El API convierte el nombre visible al código `MODALIDADID`; `TODOS` = todas.
+          required: false
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ModalidadId'
+            default: TODOS
+      responses:
+        '200':
+          description: Lista de carreras con desglose de matrícula.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  filtros:
+                    type: object
+                    properties:
+                      periodo:
+                        type: string
+                        nullable: true
+                        description: Periodo normalizado a código `PERIODONUMERICO`.
+                      ano_academico:
+                        type: integer
+                        nullable: true
+                        description: Año académico derivado del periodo o del parámetro `ano`.
+                      tipo_ciclo:
+                        type: string
+                        nullable: true
+                        enum: [SIERRA, COSTA]
+                        description: Ciclo académico derivado del periodo o del parámetro `ciclo`.
+                      sede:
+                        type: string
+                        nullable: true
+                        description: Sede filtrada; `null` significa todas.
+                      facultad:
+                        type: string
+                        nullable: true
+                        description: Facultad filtrada; `null` significa todas.
+                      modalidad:
+                        type: string
+                        nullable: true
+                        description: Modalidad normalizada a `MODALIDADID`; `null` significa todas.
+                      top:
+                        type: integer
+                        description: Número máximo de carreras retornadas.
+                  total:
+                    type: integer
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MatriculaCarrera'
+              example:
+                ok: true
+                filtros:
+                  periodo: "20261"
+                  ano_academico: 2026
+                  tipo_ciclo: SIERRA
+                  sede: null
+                  facultad: null
+                  modalidad: null
+                  top: 20
+                total: 15
+                data:
+                  - carreranombre: "MEDICINA"
+                    carrerasede: "MATRIZ CUENCA"
+                    inscritos: 420
+                    nuevos: 122
+                    convalidados: 8
+                    repetidores: 290
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /api/inscripciones-historico:
+    get:
+      summary: Serie temporal de inscripciones y matrículas por periodo
+      description: |
+        Devuelve una serie temporal histórica con una fila por
+        `PERIODONUMERICO`. Cada fila contiene inscritos, pagados, alumnos
+        nuevos y tasa de conversión del periodo.
+
+        Úselo para preguntas como:
+        - ¿Cómo han evolucionado los inscritos por periodo?
+        - ¿Cuál es la tendencia histórica de matrículas pagadas?
+        - ¿Cómo cambia la tasa de conversión en el tiempo?
+        - ¿Cuál es la evolución histórica por sede o facultad?
+
+        Por defecto incluye los ciclos SIERRA y COSTA y excluye periodos
+        especiales (`TIPO_CICLO = "Otro"`). Use `ciclo` para limitar la serie
+        a SIERRA o COSTA, `desde` para cortar por año inicial, y `sede` o
+        `facultad` para segmentar la evolución.
+
+        Este endpoint es para tendencias de muchos periodos. Para comparar
+        dos periodos con la misma fecha de corte use `/api/comparativo-periodo`.
+      operationId: getInscripcionesHistorico
+      tags: [Histórico]
+      parameters:
+        - $ref: '#/components/parameters/ciclo'
+        - name: sede
+          in: query
+          description: Sede universitaria. `Todos` = todas las sedes.
+          required: false
+          schema:
+            type: string
+            enum:
+              - "Todos"
+              - "MATRIZ CUENCA"
+              - "SEDE AZOGUES"
+              - "SEDE MACAS"
+              - "EXTENSION SAN PABLO DE LA TRONCAL"
+              - "EXTENSION CAÑAR"
+            default: "Todos"
+        - name: facultad
+          in: query
+          description: Facultad. `Todos` = todas las facultades.
+          required: false
+          schema:
+            type: string
+            enum:
+              - "Todos"
+              - "FACULTAD DE CIENCIAS AGROPECUARIAS"
+              - "FACULTAD DE CIENCIAS DE LA SALUD"
+              - "FACULTAD DE CIENCIAS ECONÓMICAS Y EMPRESARIALES"
+              - "FACULTAD DE CIENCIAS SOCIALES"
+              - "FACULTAD DE CRIMINOLOGÍA Y CIENCIAS FORENSES"
+              - "FACULTAD DE EDUCACIÓN"
+              - "FACULTAD DE FORMACIÓN TÉCNICA Y TECNOLÓGICA SUPERIOR"
+              - "FACULTAD DE INFORMÁTICA, CIENCIAS DE LA COMPUTACIÓN, E INNOVACIÓN TECNOLÓGICA"
+              - "FACULTAD DE INGENIERÍA, INDUSTRIA Y CONSTRUCCIÓN"
+              - "UNIDAD DE CAPACITACION DE CIENCIAS MEDICAS"
+            default: "Todos"
+        - name: desde
+          in: query
+          description: Año inicial de la serie histórica, inclusive. Filtra por los primeros 4 dígitos de `PERIODONUMERICO`.
+          required: false
+          schema:
+            type: string
+            pattern: '^\d{4}$'
+            example: "2019"
+      responses:
+        '200':
+          description: Serie temporal histórica ordenada por periodo DESC.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  filtros:
+                    type: object
+                    properties:
+                      ciclo:
+                        type: string
+                        description: Ciclo filtrado. `SIERRA+COSTA` significa ambos ciclos.
+                        example: "SIERRA+COSTA"
+                      sede:
+                        type: string
+                        nullable: true
+                        description: Sede filtrada; `null` significa todas.
+                      facultad:
+                        type: string
+                        nullable: true
+                        description: Facultad filtrada; `null` significa todas.
+                      desde:
+                        type: string
+                        nullable: true
+                        description: Año inicial aplicado; `null` significa sin corte por año.
+                  total:
+                    type: integer
+                    description: Número de periodos devueltos.
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/HistoricoRow'
+              example:
+                ok: true
+                filtros:
+                  ciclo: "SIERRA+COSTA"
+                  sede: null
+                  facultad: "FACULTAD DE CIENCIAS SOCIALES"
+                  desde: "2019"
+                total: 2
+                data:
+                  - periodo: "20261"
+                    inscritos: 850
+                    pagados: 780
+                    nuevos: 220
+                    tasa_conversion: 0.92
+                  - periodo: "20252"
+                    inscritos: 700
+                    pagados: 640
+                    nuevos: 180
+                    tasa_conversion: 0.91
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /api/comparativo-periodo:
+    get:
+      summary: Comparativo de KPIs entre periodos con fecha de corte
+      description: |
+        Compara los KPIs de inscripción y matrícula del periodo seleccionado
+        contra un periodo anterior usando el mismo día/mes de corte para ambos.
+
+        Úselo para preguntas como:
+        - ¿Cómo vamos este periodo frente al año pasado?
+        - ¿Cuántos inscritos teníamos a esta misma fecha?
+        - ¿Cuál es la diferencia de matriculados, repetidores o reservas entre periodos?
+
+        Ejemplo: con `periodo=Sierra - 2026` y `fecha_corte=2026-06-12`,
+        compara `20261` hasta `2026-06-12` contra `20251` hasta `2025-06-12`.
+
+        Para periodos Costa, Swagger usa el año académico: `Costa - 2026`
+        se normaliza a `20252` y compara contra `20242`. El endpoint usa
+        solo el día/mes de `fecha_corte`; por ejemplo, `fecha_corte=2026-06-12`
+        produce cortes efectivos `2026-06-12` para `20252` y `2025-06-12`
+        para `20242`, porque Costa se calcula con el año académico (`AÑO_1`).
+
+        Si `periodo_anterior` se omite, se calcula automáticamente restando
+        un año y manteniendo el ciclo (`20261` → `20251`, `20252` → `20242`).
+
+        Swagger muestra filtros recomendados con desplegables. El backend
+        también acepta filtros avanzados plurales (`sedes`, `facultades`,
+        `carreras_nombre`, etc.) como parámetros repetidos o separados por coma.
+        Si el usuario pide comparar una carrera por descripción aproximada,
+        primero resuelva la opción en `/api/carreras?selector=true&buscar={texto}`,
+        confirme con el usuario y luego envíe el `nombre_carrera` confirmado
+        como `carrera_nombre`.
+      operationId: getComparativoPeriodo
+      tags: [Histórico]
+      parameters:
+        - name: periodo
+          in: query
+          description: Periodo académico actual. En Swagger se muestra el nombre visible por año académico; el API también acepta código `PERIODONUMERICO`.
+          required: true
+          schema:
+            type: string
+            enum:
+              - "Sierra - 2026"
+              - "Costa - 2026"
+              - "Sierra - 2025"
+              - "Costa - 2025"
+              - "Sierra - 2024"
+              - "Costa - 2024"
+            example: "Sierra - 2026"
+        - $ref: '#/components/parameters/periodoAnterior'
+        - $ref: '#/components/parameters/fechaCorte'
+        - name: ciclo
+          in: query
+          description: Ciclo académico. `Todos` = no filtra por ciclo adicional.
+          required: false
+          schema:
+            type: string
+            enum:
+              - "Todos"
+              - "SIERRA"
+              - "COSTA"
+            default: "Todos"
+        - name: sede
+          in: query
+          description: Sede universitaria. `Todos` = todas las sedes.
+          required: false
+          schema:
+            type: string
+            enum:
+              - "Todos"
+              - "MATRIZ CUENCA"
+              - "SEDE AZOGUES"
+              - "SEDE MACAS"
+              - "EXTENSION SAN PABLO DE LA TRONCAL"
+              - "EXTENSION CAÑAR"
+            default: "Todos"
+        - name: facultad
+          in: query
+          description: Facultad. `Todos` = todas las facultades.
+          required: false
+          schema:
+            type: string
+            enum:
+              - "Todos"
+              - "FACULTAD DE CIENCIAS AGROPECUARIAS"
+              - "FACULTAD DE CIENCIAS DE LA SALUD"
+              - "FACULTAD DE CIENCIAS ECONÓMICAS Y EMPRESARIALES"
+              - "FACULTAD DE CIENCIAS SOCIALES"
+              - "FACULTAD DE CRIMINOLOGÍA Y CIENCIAS FORENSES"
+              - "FACULTAD DE EDUCACIÓN"
+              - "FACULTAD DE FORMACIÓN TÉCNICA Y TECNOLÓGICA SUPERIOR"
+              - "FACULTAD DE INFORMÁTICA, CIENCIAS DE LA COMPUTACIÓN, E INNOVACIÓN TECNOLÓGICA"
+              - "FACULTAD DE INGENIERÍA, INDUSTRIA Y CONSTRUCCIÓN"
+              - "UNIDAD DE CAPACITACION DE CIENCIAS MEDICAS"
+            default: "Todos"
+        - name: carrera_nombre
+          in: query
+          description: Nombre visible exacto de carrera (`CARRERANOMBRE`). Si el usuario escribe una descripción aproximada, primero consulte `/api/carreras?selector=true&buscar={texto}`, muestre las opciones y use este filtro solo después de confirmar el `nombre_carrera` correcto.
+          required: false
+          allowEmptyValue: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Comparativo calculado correctamente.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  filtros:
+                    $ref: '#/components/schemas/ComparativoPeriodoFiltros'
+                  total:
+                    type: integer
+                  actual:
+                    allOf:
+                      - $ref: '#/components/schemas/ComparativoPeriodoRow'
+                    nullable: true
+                  anterior:
+                    allOf:
+                      - $ref: '#/components/schemas/ComparativoPeriodoRow'
+                    nullable: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ComparativoPeriodoRow'
+              example:
+                ok: true
+                filtros:
+                  periodoActual: "20261"
+                  periodoAnterior: "20251"
+                  cutoffMonth: 6
+                  cutoffDay: 12
+                  ciclo: "SIERRA"
+                  sedes: ["MATRIZ CUENCA"]
+                  unidades: []
+                  unidadesAcademicas: []
+                  carreras: []
+                  carrerasNombre: []
+                  facultades: ["FACULTAD DE CIENCIAS SOCIALES"]
+                  fechaReferencia: "2026-06-12"
+                  fechaCorte: "06-12"
+                  fechasCortePorPeriodo:
+                    "20261": "2026-06-12"
+                    "20251": "2025-06-12"
+                total: 2
+                actual:
+                  periodo: "20261"
+                  tipo: "actual"
+                  fecha_corte: "2026-06-12"
+                  inscritos: 4060
+                  matriculados: 2031
+                  repetidores: 792
+                  reservas: 2153
+                anterior:
+                  periodo: "20251"
+                  tipo: "anterior"
+                  fecha_corte: "2025-06-12"
+                  inscritos: 3800
+                  matriculados: 1900
+                  repetidores: 700
+                  reservas: 2000
+                data:
+                  - periodo: "20261"
+                    tipo: "actual"
+                    fecha_corte: "2026-06-12"
+                    inscritos: 4060
+                    matriculados: 2031
+                    repetidores: 792
+                    reservas: 2153
+                  - periodo: "20251"
+                    tipo: "anterior"
+                    fecha_corte: "2025-06-12"
+                    inscritos: 3800
+                    matriculados: 1900
+                    repetidores: 700
+                    reservas: 2000
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /api/estudiantes:
+    get:
+      summary: KPIs de estudiantes y embudo de matrícula
+      description: |
+        Endpoint canónico para consultar KPIs actuales de estudiantes del
+        Resumen Ejecutivo de Gestión: inscritos, reservas, matrículas nuevas,
+        repetidores, convalidados, pagos pendientes, tasas de conversión,
+        promedio de días entre inscripción y pago, y tasa de pérdida.
+
+        Úselo para preguntas como:
+        - ¿Cuántos inscritos hay en un periodo?
+        - ¿Cuántas reservas o matrículas nuevas tiene una carrera?
+        - ¿Cuál es la tasa de conversión de inscritos a matriculados?
+        - ¿Cuántos pagos pendientes hay por sede, facultad, carrera o modalidad?
+
+        Para comparaciones entre periodos use `/api/comparativo-periodo`.
+        Si el usuario menciona una carrera de forma aproximada, primero use
+        `/api/carreras?selector=true&buscar={texto}` para obtener opciones,
+        confirme la carrera correcta con el usuario y recién entonces consulte
+        este endpoint con `carrera_nombre` o `carrera`.
+      operationId: getEstudiantes
+      tags: [KPIs]
+      parameters:
+        - name: periodo
+          in: query
+          description: Periodo. `Todos` = general.
+          required: false
+          schema:
+            type: string
+            enum:
+              - "Todos"
+              - "Sierra - 2026"
+              - "Costa - 2026"
+              - "Sierra - 2025"
+              - "Costa - 2025"
+              - "Sierra - 2024"
+              - "Costa - 2024"
+        - name: sede
+          in: query
+          description: Sede. `Todos` = general.
+          required: false
+          schema:
+            type: string
+            enum:
+              - "Todos"
+              - "MATRIZ CUENCA"
+              - "SEDE AZOGUES"
+              - "SEDE MACAS"
+              - "EXTENSION SAN PABLO DE LA TRONCAL"
+              - "EXTENSION CAÑAR"
+        - name: facultad
+          in: query
+          description: Facultad. `Todos` = general.
+          required: false
+          schema:
+            type: string
+            enum:
+              - "Todos"
+              - "FACULTAD DE CIENCIAS AGROPECUARIAS"
+              - "FACULTAD DE CIENCIAS DE LA SALUD"
+              - "FACULTAD DE CIENCIAS ECONÓMICAS Y EMPRESARIALES"
+              - "FACULTAD DE CIENCIAS SOCIALES"
+              - "FACULTAD DE CRIMINOLOGÍA Y CIENCIAS FORENSES"
+              - "FACULTAD DE EDUCACIÓN"
+              - "FACULTAD DE FORMACIÓN TÉCNICA Y TECNOLÓGICA SUPERIOR"
+              - "FACULTAD DE INFORMÁTICA, CIENCIAS DE LA COMPUTACIÓN, E INNOVACIÓN TECNOLÓGICA"
+              - "FACULTAD DE INGENIERÍA, INDUSTRIA Y CONSTRUCCIÓN"
+              - "UNIDAD DE CAPACITACION DE CIENCIAS MEDICAS"
+        - name: carrera
+          in: query
+          description: Código técnico exacto de carrera (`CARRERAID`). Vacío o `Todos` = todas. Para obtenerlo desde una descripción aproximada, primero use `/api/carreras?selector=true&buscar={texto}` y confirme la opción con el usuario.
+          required: false
+          allowEmptyValue: true
+          schema:
+            type: string
+        - name: carrera_nombre
+          in: query
+          description: Nombre visible exacto de carrera (`CARRERANOMBRE`). Recomendado para filtros desde selector porque agrupa códigos internos con el mismo nombre. Para texto aproximado, primero use `/api/carreras?selector=true&buscar={texto}`, confirme la opción y luego envíe el `nombre_carrera` confirmado.
+          required: false
+          allowEmptyValue: true
+          schema:
+            type: string
+        - name: modalidad
+          in: query
+          description: |
+            Modalidad académica. Swagger muestra el nombre y el API lo convierte internamente al código `MODALIDADID`.
+            Vacío o `Todos` = todas.
+          required: false
+          allowEmptyValue: true
+          schema:
+            $ref: '#/components/schemas/ModalidadId'
+      responses:
+        '200':
+          description: KPIs de estudiantes calculados correctamente.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  filtros:
+                    type: object
+                    properties:
+                      carrera:
+                        type: string
+                        nullable: true
+                      carrera_nombre:
+                        type: string
+                        nullable: true
+                      sede:
+                        type: string
+                        nullable: true
+                      facultad:
+                        type: string
+                        nullable: true
+                      periodo:
+                        type: string
+                        nullable: true
+                      modalidad:
+                        type: string
+                        nullable: true
+                  data:
+                    $ref: '#/components/schemas/EstudiantesData'
+              example:
+                ok: true
+                filtros:
+                  carrera: null
+                  carrera_nombre: "DERECHO"
+                  sede: "MATRIZ CUENCA"
+                  facultad: "FACULTAD DE CIENCIAS SOCIALES"
+                  periodo: "20261"
+                  modalidad: "P"
+                data:
+                  total_inscritos: 310
+                  reservas: 298
+                  matriculas_nuevas: 122
+                  total_repetidores_regulares: 88
+                  total_repetidores_capacitaciones_medicas: 0
+                  matriculas_convalidadas: 14
+                  matriculas_convalidadas_ciclo_1: 12
+                  pagos_pendientes_tarjeta: 8
+                  matriculas_pendientes: 164
+                  tasa_conversion_inscrito_matriculado: 0.5
+                  tasa_conversion_reservas_matriculado: 0.96
+                  promedio_dias_inscrito_matriculado: 14.71
+                  tasa_perdida: 0.04
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /api/facultades:
+    get:
+      summary: Totales de inscritos y matrículas por facultad
+      description: |
+        Devuelve una fila por `CARRERAFACULTAD` ordenada por inscritos DESC.
+        Útil para poblar el selector de facultades en la app móvil y para
+        comparar el peso relativo de cada facultad.
+      operationId: getFacultades
+      tags: [Dimensiones]
+      parameters:
+        - $ref: '#/components/parameters/sede'
+        - name: periodo
+          in: query
+          description: |
+            Periodo académico a filtrar. Acepta el código `PERIODONUMERICO`
+            de 5 dígitos (ej: `20261`).
+          required: false
+          schema:
+            type: string
+            pattern: '^\d{5}$'
+            example: "20261"
+      responses:
+        '200':
+          description: Lista de facultades con totales.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  filtros:
+                    type: object
+                    properties:
+                      sede:
+                        type: string
+                        nullable: true
+                      periodo:
+                        type: string
+                        nullable: true
+                  total:
+                    type: integer
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FacultadRow'
+              example:
+                ok: true
+                filtros:
+                  sede: "MATRIZ CUENCA"
+                  periodo: "20261"
+                total: 8
+                data:
+                  - carrerafacultad: "FACULTAD DE CIENCIAS DE LA SALUD"
+                    inscritos: 820
+                    pagados: 755
+                    nuevos: 210
+                    repetidores: 545
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /api/carreras:
+    get:
+      summary: Catálogo y resolución de carreras por nombre
+      description: |
+        Endpoint de catálogo y resolución de entidades de carrera. Devuelve
+        carreras activas del modelo Power BI y permite convertir texto libre
+        del usuario en una opción de carrera confirmable.
+
+        Úselo antes de llamar endpoints analíticos cuando el usuario mencione
+        una carrera por lenguaje natural, nombre incompleto, nombre con tildes
+        omitidas o descripción aproximada. Ejemplos: "medicina", "medicina a",
+        "derecho", "psicologia clinica", "veterinaria".
+
+        No use textos aproximados directamente en `/api/estudiantes`,
+        `/api/comparativo-periodo` o `/api/cohortes`. Primero resuelva la
+        carrera en este endpoint, muestre las opciones al usuario y continúe
+        solo cuando el usuario confirme la opción correcta.
+
+        Flujo recomendado para una base vectorial o asistente:
+        1. Si el usuario pide métricas de una carrera ambigua, llamar
+           `/api/carreras?selector=true&buscar={texto_del_usuario}`.
+        2. Presentar al usuario las opciones devueltas en `nombre_carrera`
+           junto con `codigo_carrera` si ayuda a distinguirlas.
+        3. Esperar confirmación del usuario.
+        4. Usar `nombre_carrera` confirmado como `carrera_nombre` en
+           `/api/estudiantes` o `/api/comparativo-periodo`.
+        5. Usar `codigo_carrera` confirmado como `carrera` en `/api/cohortes`.
+
+        Con `selector=true`, la respuesta se reduce a opciones limpias:
+        `codigo_carrera`, `nombre_carrera` y `codigos_carrera`. Este modo es
+        el recomendado para resolver entidades antes de una consulta analítica.
+        Sin `selector=true`, devuelve la ficha completa de cada carrera con
+        sede, unidad, facultad, inscritos y pagados.
+
+        El parámetro `buscar` permite búsqueda flexible por nombre de carrera:
+        ignora mayúsculas/minúsculas, tildes y espacios repetidos. Cuando se
+        envía `buscar`, el servicio consulta un catálogo amplio antes de
+        filtrar para evitar perder carreras por el orden de inscritos. Las
+        coincidencias se ordenan por relevancia: exactas primero, luego las
+        que empiezan con el texto buscado y al final coincidencias parciales.
+
+        Ejemplo: `buscar=medicina` debe priorizar `MEDICINA`, luego
+        `MEDICINA A` o `MEDICINA VETERINARIA`, y después nombres que solo
+        contienen la palabra, como `CAPACITACION PREUNIVERSITARIA MEDICINA`.
+
+        `codigos_carrera` puede contener varios códigos internos para un
+        mismo `nombre_carrera`. Por eso, para KPIs agregados normalmente es
+        más estable usar `nombre_carrera`; para cohortes se requiere
+        `codigo_carrera` porque ese endpoint filtra por código.
+
+        El API no expone parámetro `top`; devuelve el catálogo disponible hasta
+        el límite técnico interno del servicio.
+
+        El filtro de periodo (`?periodo=`) convierte el código `AAAAN` a
+        `AÑO_1` + `TIPO_CICLO` para filtrar las medidas `[Total_Inscritos]`
+        y `[Total_Pagos]` al periodo académico indicado. Sin este filtro
+        las medidas reflejan el acumulado de todos los periodos.
+
+        En Swagger las opciones visibles se traducen así:
+        `Sierra - 2026` = `20261`, `Costa - 2026` = `20252`,
+        `Sierra - 2025` = `20251`, `Costa - 2025` = `20242`,
+        `Sierra - 2024` = `20241`, `Costa - 2024` = `20232`.
+
+        - SIERRA (`N=1`): `AÑO_1 = AAAA`
+        - COSTA  (`N=2`): `AÑO_1 = AAAA + 1`
+      operationId: getCarreras
+      tags: [Dimensiones]
+      parameters:
+        - name: periodo
+          in: query
+          description: Periodo académico.
+          required: false
+          schema:
+            type: string
+            enum:
+              - "Todos"
+              - "Sierra - 2026"
+              - "Costa - 2026"
+              - "Sierra - 2025"
+              - "Costa - 2025"
+              - "Sierra - 2024"
+              - "Costa - 2024"
+            default: "Sierra - 2026"
+        - name: sede
+          in: query
+          description: Sede universitaria.
+          required: false
+          schema:
+            type: string
+            enum:
+              - "Todos"
+              - "MATRIZ CUENCA"
+              - "SEDE AZOGUES"
+              - "SEDE MACAS"
+              - "EXTENSION SAN PABLO DE LA TRONCAL"
+              - "EXTENSION CAÑAR"
+            default: "MATRIZ CUENCA"
+        - name: facultad
+          in: query
+          description: Facultad (`CARRERAFACULTAD`).
+          required: false
+          schema:
+            type: string
+            enum:
+              - "Todos"
+              - "FACULTAD DE CIENCIAS AGROPECUARIAS"
+              - "FACULTAD DE CIENCIAS DE LA SALUD"
+              - "FACULTAD DE CIENCIAS ECONÓMICAS Y EMPRESARIALES"
+              - "FACULTAD DE CIENCIAS SOCIALES"
+              - "FACULTAD DE CRIMINOLOGÍA Y CIENCIAS FORENSES"
+              - "FACULTAD DE EDUCACIÓN"
+              - "FACULTAD DE FORMACIÓN TÉCNICA Y TECNOLÓGICA SUPERIOR"
+              - "FACULTAD DE INFORMÁTICA, CIENCIAS DE LA COMPUTACIÓN, E INNOVACIÓN TECNOLÓGICA"
+              - "FACULTAD DE INGENIERÍA, INDUSTRIA Y CONSTRUCCIÓN"
+              - "UNIDAD DE CAPACITACION DE CIENCIAS MEDICAS"
+            default: "FACULTAD DE CIENCIAS SOCIALES"
+        - name: selector
+          in: query
+          description: Si es `true`, devuelve opciones simplificadas para confirmar carrera con el usuario antes de consultar endpoints analíticos.
+          required: false
+          schema:
+            type: boolean
+            default: false
+        - name: buscar
+          in: query
+          description: Texto libre para buscar carreras por nombre. Ignora mayúsculas, tildes y espacios repetidos; prioriza coincidencias exactas. Recomendado con `selector=true` para obtener opciones y confirmar `nombre_carrera` o `codigo_carrera` con el usuario.
+          required: false
+          allowEmptyValue: true
+          schema:
+            type: string
+            example: "medicina"
+      responses:
+        '200':
+          description: Lista de carreras con totales.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  total:
+                    type: integer
+                  filtros:
+                    type: object
+                    properties:
+                      periodo:
+                        type: string
+                        nullable: true
+                      ano_academico:
+                        type: integer
+                        nullable: true
+                      tipo_ciclo:
+                        type: string
+                        nullable: true
+                        enum: [SIERRA, COSTA]
+                      sede:
+                        type: string
+                        nullable: true
+                      facultad:
+                        type: string
+                        nullable: true
+                      selector:
+                        type: boolean
+                      buscar:
+                        type: string
+                        nullable: true
+                        description: Texto de búsqueda aplicado; `null` significa sin búsqueda por nombre.
+                  data:
+                    type: array
+                    items:
+                      oneOf:
+                        - $ref: '#/components/schemas/CarreraRow'
+                        - $ref: '#/components/schemas/CarreraSelectorRow'
+              examples:
+                completo:
+                  summary: Respuesta completa con métricas
+                  value:
+                    ok: true
+                    total: 1
+                    filtros:
+                      periodo: "20261"
+                      ano_academico: 2026
+                      tipo_ciclo: SIERRA
+                      sede: "MATRIZ CUENCA"
+                      facultad: "FACULTAD DE CIENCIAS SOCIALES"
+                      selector: false
+                      buscar: null
+                    data:
+                      - CARRERAID: "PSI"
+                        CARRERANOMBRE: "PSICOLOGÍA CLÍNICA"
+                        CARRERASEDE: "MATRIZ CUENCA"
+                        CARRERAUNIDAD: "UNIDAD ACADÉMICA DE CIENCIAS SOCIALES"
+                        CARRERAFACULTAD: "FACULTAD DE CIENCIAS SOCIALES"
+                        inscritos: 145
+                        pagados: 138
+                selector:
+                  summary: Respuesta para selector de carreras
+                  value:
+                    ok: true
+                    total: 1
+                    filtros:
+                      periodo: "20261"
+                      ano_academico: 2026
+                      tipo_ciclo: SIERRA
+                      sede: "MATRIZ CUENCA"
+                      facultad: "FACULTAD DE CIENCIAS SOCIALES"
+                      selector: true
+                      buscar: "dere"
+                    data:
+                      - codigo_carrera: "23101"
+                        nombre_carrera: "DERECHO"
+                        codigos_carrera: ["23101", "23111"]
+                resolverMedicina:
+                  summary: Resolución de una búsqueda ambigua
+                  description: Use estas opciones para pedir confirmación antes de llamar `/api/estudiantes`, `/api/comparativo-periodo` o `/api/cohortes`.
+                  value:
+                    ok: true
+                    total: 4
+                    filtros:
+                      periodo: "20261"
+                      ano_academico: 2026
+                      tipo_ciclo: SIERRA
+                      sede: null
+                      facultad: null
+                      selector: true
+                      buscar: "medicina"
+                    data:
+                      - codigo_carrera: "17001"
+                        nombre_carrera: "MEDICINA"
+                        codigos_carrera: ["17001"]
+                      - codigo_carrera: "17002"
+                        nombre_carrera: "MEDICINA A"
+                        codigos_carrera: ["17002"]
+                      - codigo_carrera: "23801"
+                        nombre_carrera: "MEDICINA VETERINARIA"
+                        codigos_carrera: ["23801"]
+                      - codigo_carrera: "16901"
+                        nombre_carrera: "CAPACITACION PREUNIVERSITARIA MEDICINA"
+                        codigos_carrera: ["16901"]
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /api/periodos:
+    get:
+      summary: Lista de periodos académicos con fechas clave
+      description: |
+        Devuelve todos los periodos del calendario académico ordenados
+        por `PERIODONUMERICO` DESC. Útil para poblar selectores de periodo.
+        TTL de caché: 1 hora (los periodos cambian poco).
+      operationId: getPeriodos
+      tags: [Dimensiones]
+      parameters:
+        - $ref: '#/components/parameters/ciclo'
+        - $ref: '#/components/parameters/ano'
+      responses:
+        '200':
+          description: Lista de periodos académicos.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  filtros:
+                    type: object
+                    properties:
+                      ano:
+                        type: string
+                        nullable: true
+                      ciclo:
+                        type: string
+                        nullable: true
+                  total:
+                    type: integer
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PeriodoRow'
+              example:
+                ok: true
+                filtros:
+                  ano: "2026"
+                  ciclo: "SIERRA"
+                total: 1
+                data:
+                  - periodo: "20261"
+                    inicio_periodo: "2026-04-01T00:00:00Z"
+                    fin_periodo: "2026-09-30T00:00:00Z"
+                    inscripciones_inicio: "2026-01-15T00:00:00Z"
+                    inscripciones_fin: "2026-03-31T00:00:00Z"
+                    matricula_inicio: "2026-03-01T00:00:00Z"
+                    matricula_fin: "2026-04-15T00:00:00Z"
+                    inicio_clases: "2026-04-07T00:00:00Z"
+                    fin_clases: "2026-09-26T00:00:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /api/sedes:
+    get:
+      summary: Lista de sedes universitarias con totales
+      description: |
+        Devuelve todas las sedes con inscritos, pagados y número de carreras
+        activas, ordenadas por inscritos DESC.
+        Sin parámetros — siempre devuelve todas las sedes.
+        TTL de caché: 1 hora.
+      operationId: getSedes
+      tags: [Dimensiones]
+      responses:
+        '200':
+          description: Lista de sedes con totales.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  total:
+                    type: integer
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SedeRow'
+              example:
+                ok: true
+                total: 4
+                data:
+                  - carrerasede: "MATRIZ CUENCA"
+                    inscritos: 3820
+                    pagados: 3540
+                    carreras: 28
+                  - carrerasede: "SEDE AZOGUES"
+                    inscritos: 640
+                    pagados: 590
+                    carreras: 8
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+  /api/cache/invalidate:
+    post:
+      summary: Invalidar caché de un dominio
+      description: |
+        Fuerza la invalidación del caché en memoria para el prefijo indicado.
+        Útil cuando se actualiza el dataset en Power BI Service y se necesita
+        que la API devuelva datos frescos sin esperar el TTL natural.
+
+        El prefijo `"all"` invalida toda la caché.
+      operationId: invalidateCache
+      tags: [Administración]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prefix]
+              properties:
+                prefix:
+                  type: string
+                  enum:
+                    - estudiantes
+                    - marketing
+                    - carreras
+                    - matriculas-carrera
+                    - periodos
+                    - sedes
+                    - facultades
+                    - historico
+                    - all
+                  example: estudiantes
+            example:
+              prefix: estudiantes
+      responses:
+        '200':
+          description: Caché invalidado correctamente.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  message:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+              example:
+                ok: true
+                message: "Caché invalidado para: estudiantes"
+                timestamp: "2026-06-05T14:30:00.000Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/cohortes:
+    get:
+      summary: Análisis de permanencia y deserción por cohortes
+      description: |
+        Devuelve la matriz longitudinal de retención estudiantil y el resumen
+        por cohorte (NRO. INICIAL, NRO. ACTUAL, TASA DE PÉRDIDA).
+
+        Equivale al visual "Análisis de Permanencia y Deserción: Diagnóstico
+        por Cohortes" del dashboard de Power BI.
+
+        **Cálculo:**
+        - `nro_inicial` = estudiantes del cohorte en su primer periodo
+        - `nro_actual` = estudiantes del cohorte en el periodo más reciente
+        - `tasa_perdida` = (nro_actual − nro_inicial) / nro_inicial
+
+        **Medida**: usa `[DistinctDocs_SinHomologación]` del modelo Power BI,
+        que internamente aplica los filtros del visual:
+        `RETIRADO = 0`, `CONVALIDACION = 0`, `MODOMATRICULA` regular,
+        `FECHAPAGO` no nulo, `CICLO` no nulo.
+
+        Si el usuario menciona una carrera por texto aproximado, primero use
+        `/api/carreras?selector=true&buscar={texto}` para obtener opciones,
+        confirme la carrera correcta con el usuario y luego envíe el
+        `codigo_carrera` confirmado en el parámetro `carrera`.
+      operationId: getCohortes
+      tags: [Cohortes]
+      parameters:
+        - name: carrera
+          in: query
+          description: Código exacto de carrera (`CARRERAID`). Sin este filtro devuelve todos los cohortes institucionales. Para texto aproximado, primero use `/api/carreras?selector=true&buscar={texto}`, confirme la opción con el usuario y luego envíe el `codigo_carrera`.
+          required: false
+          schema:
+            type: string
+            example: "24001"
+        - name: sede
+          in: query
+          description: Sede universitaria. `Todos` = todas las sedes.
+          required: false
+          schema:
+            type: string
+            enum:
+              - "Todos"
+              - "MATRIZ CUENCA"
+              - "SEDE AZOGUES"
+              - "SEDE MACAS"
+              - "EXTENSION SAN PABLO DE LA TRONCAL"
+              - "EXTENSION CAÑAR"
+            default: "Todos"
+        - name: facultad
+          in: query
+          description: Facultad. `Todos` = todas las facultades.
+          required: false
+          schema:
+            type: string
+            enum:
+              - "Todos"
+              - "FACULTAD DE CIENCIAS AGROPECUARIAS"
+              - "FACULTAD DE CIENCIAS DE LA SALUD"
+              - "FACULTAD DE CIENCIAS ECONÓMICAS Y EMPRESARIALES"
+              - "FACULTAD DE CIENCIAS SOCIALES"
+              - "FACULTAD DE CRIMINOLOGÍA Y CIENCIAS FORENSES"
+              - "FACULTAD DE EDUCACIÓN"
+              - "FACULTAD DE FORMACIÓN TÉCNICA Y TECNOLÓGICA SUPERIOR"
+              - "FACULTAD DE INFORMÁTICA, CIENCIAS DE LA COMPUTACIÓN, E INNOVACIÓN TECNOLÓGICA"
+              - "FACULTAD DE INGENIERÍA, INDUSTRIA Y CONSTRUCCIÓN"
+              - "UNIDAD DE CAPACITACION DE CIENCIAS MEDICAS"
+            default: "Todos"
+        - name: modalidad
+          in: query
+          description: |
+            Modalidad académica. Swagger muestra el nombre y el API lo convierte internamente al código `MODALIDADID`.
+          required: false
+          schema:
+            $ref: '#/components/schemas/ModalidadId'
+        - name: cohorte
+          in: query
+          description: Cohorte mínimo a incluir — `COHORTENUMERICO >= valor`. Formato `AAAAN`.
+          required: false
+          schema:
+            type: string
+            pattern: '^\d{5}$'
+            example: "20221"
+        - name: hasta_periodo
+          in: query
+          description: Periodo máximo a incluir — `PERIODONUMERICO <= valor`. Acotar aquí el periodo actual evita incluir periodos futuros con datos incompletos. Formato `AAAAN`.
+          required: false
+          schema:
+            type: string
+            pattern: '^\d{5}$'
+            example: "20252"
+      responses:
+        '200':
+          description: Análisis de cohortes calculado correctamente.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  filtros:
+                    type: object
+                    properties:
+                      carrera:
+                        type: string
+                        nullable: true
+                      sede:
+                        type: string
+                        nullable: true
+                      facultad:
+                        type: string
+                        nullable: true
+                      modalidad:
+                        type: string
+                        nullable: true
+                      cohorte:
+                        type: string
+                        nullable: true
+                      hasta_periodo:
+                        type: string
+                        nullable: true
+                  periodo_actual:
+                    type: string
+                    description: Periodo más reciente con datos (usado para calcular nro_actual).
+                    example: "20252"
+                  total_cohortes:
+                    type: integer
+                  resumen:
+                    type: array
+                    description: Un elemento por cohorte, ordenado por cohorte DESC.
+                    items:
+                      $ref: '#/components/schemas/CohorteResumenRow'
+                  matriz:
+                    type: array
+                    description: Tabla cruzada plana (PERIODO × COHORTE → estudiantes).
+                    items:
+                      $ref: '#/components/schemas/CohorteMatrizRow'
+              example:
+                ok: true
+                filtros:
+                  carrera: "24001"
+                  sede: null
+                  facultad: null
+                  modalidad: "P"
+                  cohorte: null
+                  hasta_periodo: null
+                periodo_actual: "20252"
+                total_cohortes: 2
+                resumen:
+                  - cohorte: 20252
+                    nro_inicial: 45
+                    nro_actual: 45
+                    tasa_perdida: 0
+                  - cohorte: 20251
+                    nro_inicial: 37
+                    nro_actual: 31
+                    tasa_perdida: -0.162
+                matriz:
+                  - periodo: "20252"
+                    cohorte: 20252
+                    estudiantes: 45
+                  - periodo: "20251"
+                    cohorte: 20251
+                    estudiantes: 37
+                  - periodo: "20252"
+                    cohorte: 20251
+                    estudiantes: 31
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+tags:
+  - name: KPIs
+    description: |
+      Indicadores clave del Resumen Ejecutivo de Gestión: inscritos, reservas,
+      matrículas, repetidores, convalidados, pagos pendientes, conversión y pérdida.
+  - name: Matrícula
+    description: Desglose de matrícula por carrera y tipo de estudiante.
+  - name: Histórico
+    description: Series temporales de inscripciones y matrículas.
+  - name: Cohortes
+    description: Análisis longitudinal de permanencia y deserción por cohortes.
+  - name: Dimensiones
+    description: Catálogos para poblar selectores (sedes, facultades, carreras, periodos).
+  - name: Administración
+    description: Operaciones de mantenimiento de la API.

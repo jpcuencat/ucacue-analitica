@@ -1,0 +1,36 @@
+# Entorno
+.venv/
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# Herramientas / caché
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.langgraph_api/
+
+# Logs y temporales
+*.log
+
+# Sistema
+.DS_Store
+
+# Checklist de entrega TFM: documento de trabajo con credenciales y datos personales
+docs/entrega-tfm.md
+
+# Material del máster y de referencia (NO es parte del proyecto)
+docs/*.pdf
+docs/analistaia.md
+docs/requirements.md
+docs/design-system-reference.html
+
+# Artefacto incremental de TypeScript (build)
+*.tsbuildinfo

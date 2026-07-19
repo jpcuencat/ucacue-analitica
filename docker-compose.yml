@@ -1,0 +1,82 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ucacue
+      POSTGRES_USER: ucacue_app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    networks:
+      - ucacue-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ucacue_app -d ucacue"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  langgraph:
+    build:
+      context: .
+      dockerfile: Dockerfile.langgraph
+    env_file: .env
+    expose:
+      - "2024"
+    volumes:
+      # langgraph dev persiste checkpoints en .langgraph_api (pickles);
+      # sin este volumen cada deploy/reinicio borra todas las conversaciones.
+      - langgraph-data:/app/.langgraph_api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ucacue-net
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # URL pública del API — definir PUBLIC_API_URL en .env (gitignorado)
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:6069/api/lg}
+        NEXT_PUBLIC_GRAPH_ID: agent
+        LANGGRAPH_INTERNAL_URL: http://langgraph:2024
+    environment:
+      LANGGRAPH_INTERNAL_URL: http://langgraph:2024
+      DATABASE_URL: postgresql://ucacue_app:${POSTGRES_PASSWORD}@postgres:5432/ucacue
+    env_file: ./frontend/.env.local
+    ports:
+      - "6069:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      langgraph:
+        condition: service_started
+    networks:
+      - ucacue-net
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    # Túnel con nombre (URL estable): requiere TUNNEL_TOKEN en .env.
+    # El hostname público se configura en el dashboard de Cloudflare
+    # (Zero Trust → Networks → Tunnels) apuntando a http://frontend:3000.
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    env_file: .env
+    depends_on:
+      - frontend
+    networks:
+      - ucacue-net
+    restart: unless-stopped
+
+networks:
+  ucacue-net:
+
+volumes:
+  postgres-data:
+  langgraph-data:

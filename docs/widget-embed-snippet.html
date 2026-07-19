@@ -1,0 +1,108 @@
+<!--
+  Widget del Asistente de Analítica Académica UCACUE
+  ===================================================
+  Snippet para embeber en cualquier sitio (ej. analitica.ucacue.edu.ec).
+  Pegar este bloque completo antes del cierre de </body>.
+
+  No requiere librerías. El chat vive en un dominio propio con HTTPS;
+  la sesión usa cookies SameSite=None; Secure; Partitioned (funciona
+  cross-site en Chrome, Edge, Firefox y Safari).
+-->
+<style>
+  #ucacue-widget-wrapper {
+    position: fixed; bottom: 28px; right: 28px; z-index: 9999;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 12px;
+  }
+  #ucacue-widget-window {
+    width: 460px; height: 650px; border-radius: 12px; overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0,0,0,.22); background: #fff;
+    border: 1px solid rgba(0,0,0,.08); display: none;
+  }
+  #ucacue-widget-window.open { display: block; }
+  #ucacue-widget-window iframe { width: 100%; height: 100%; border: none; }
+  #ucacue-widget-btn {
+    width: 56px; height: 56px; border-radius: 50%; background: #AB0000;
+    border: none; cursor: pointer; display: flex; align-items: center;
+    justify-content: center; box-shadow: 0 4px 16px rgba(171,0,0,.4);
+    color: #fff; font-size: 22px; transition: transform .15s ease;
+  }
+  #ucacue-widget-btn:hover { transform: scale(1.07); }
+  #ucacue-widget-label {
+    background: #1a1a2e; color: #fff; font-size: 12px; font-weight: 500;
+    padding: 6px 12px; border-radius: 20px; white-space: nowrap;
+    box-shadow: 0 2px 8px rgba(0,0,0,.2); pointer-events: none;
+    transition: opacity .3s;
+  }
+  #ucacue-widget-label.hidden { opacity: 0; }
+  @media (max-width: 480px) {
+    #ucacue-widget-window { width: calc(100vw - 16px); height: 70vh; }
+    #ucacue-widget-wrapper { bottom: 16px; right: 16px; }
+  }
+</style>
+
+<div id="ucacue-widget-wrapper">
+  <span id="ucacue-widget-label">Asistente Analítica</span>
+  <div id="ucacue-widget-window"></div>
+  <button id="ucacue-widget-btn" aria-label="Abrir asistente de analítica">💬</button>
+</div>
+
+<script>
+  (function () {
+    // Dominio del chat — REEMPLAZAR por el dominio real donde está publicado
+    // el asistente (se entrega por separado al equipo que integra el widget).
+    var CHAT_ORIGIN = "https://chat.TU-DOMINIO.com";
+    var WIDGET_URL = CHAT_ORIGIN + "/?widget=true";
+
+    var btn = document.getElementById("ucacue-widget-btn");
+    var win = document.getElementById("ucacue-widget-window");
+    var label = document.getElementById("ucacue-widget-label");
+    var loaded = false;
+    var isOpen = false;
+
+    function openWidget() {
+      if (!loaded) {
+        var iframe = document.createElement("iframe");
+        iframe.src = WIDGET_URL;
+        iframe.title = "Asistente de Analítica Académica UCACUE";
+        win.appendChild(iframe);
+        loaded = true;
+      }
+      win.classList.add("open");
+      btn.innerHTML = "✕";
+      btn.setAttribute("aria-label", "Cerrar asistente");
+      label.classList.add("hidden");
+      isOpen = true;
+      try { sessionStorage.setItem("ucacue_widget_open", "1"); } catch (e) {}
+    }
+
+    function closeWidget() {
+      win.classList.remove("open");
+      btn.innerHTML = "💬";
+      btn.setAttribute("aria-label", "Abrir asistente de analítica");
+      label.classList.remove("hidden");
+      isOpen = false;
+      try { sessionStorage.removeItem("ucacue_widget_open"); } catch (e) {}
+    }
+
+    btn.addEventListener("click", function () {
+      if (isOpen) { closeWidget(); } else { openWidget(); }
+    });
+
+    // El chat avisa cuando termina de cargar tras el login dentro del iframe:
+    // re-abrimos el widget para que el usuario no tenga que pulsar el botón.
+    window.addEventListener("message", function (e) {
+      if (e.origin !== CHAT_ORIGIN) return;
+      if (e.data && e.data.type === "ucacue-widget-ready" && !isOpen) {
+        openWidget();
+      }
+    });
+
+    // Re-abrir si estaba abierto antes de una recarga de la página host.
+    try {
+      if (sessionStorage.getItem("ucacue_widget_open") === "1") openWidget();
+    } catch (e) {}
+
+    // Ocultar la etiqueta automáticamente tras 4 s.
+    setTimeout(function () { label.classList.add("hidden"); }, 4000);
+  })();
+</script>
