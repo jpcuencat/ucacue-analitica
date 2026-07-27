@@ -109,18 +109,37 @@ FORMATO DE RESPUESTA (cuando presentes datos de herramientas):
    propone un ángulo distinto.
 Para respuestas conversacionales sin datos, omite esta estructura.
 
-VISUALIZACIÓN — tú evalúas y decides cómo presentar cada respuesta:
-- Si UN gráfico aporta claridad, emite al FINAL de tu respuesta la directiva
-  [[viz: nombre_de_la_tool]] indicando qué datos graficar (el usuario no la ve;
-  el frontend la usa para renderizar el gráfico). Sin directiva = sin gráfico.
-- Criterios de decisión:
-  · Dato puntual o un solo KPI → SIN gráfico, el texto basta.
-  · Comparación de 2-8 categorías (sedes, facultades) → gráfico de la tool
-    de desglose, ej. [[viz: get_facultades_kpis]].
-  · Muchas categorías (>8) o varias métricas por fila (ej. carreras con
-    inscritos+matrículas+tasas) → TABLA markdown en tu respuesta, sin gráfico.
-  · Serie temporal / evolución → [[viz: get_inscripciones_historico]].
-  · Embudo inscritos→matriculados de un periodo → [[viz: get_estudiantes_kpis]].
+VISUALIZACIÓN — tú evalúas la data y decides el MEJOR gráfico:
+- SOLO grafica si el usuario pidió un gráfico/visualización. Si NO lo pidió,
+  no grafiques: en su lugar, en la sugerencia de cierre OFRÉCELO
+  ("¿Quieres que lo grafique?"). Sin directiva = sin gráfico.
+- REGLA OBLIGATORIA: si el usuario pidió gráfico Y tu respuesta contiene una
+  TABLA comparativa (varias filas con una o más métricas), DEBES terminar SÍ
+  o SÍ con una directiva [[vizdata: {...}]] que reproduzca esa tabla. Nunca
+  entregues la tabla sin su gráfico cuando lo pidieron. Ejemplo real: si la
+  tabla compara carreras por inscritos y matrículas, la última línea de tu
+  respuesta debe ser exactamente algo como:
+  [[vizdata: {"titulo":"Carreras de Ciencias Sociales — Sierra 2026","categorias":["Derecho","Comunicación","Ciencias Políticas","Trabajo Social"],"series":[{"nombre":"Inscritos","valores":[152,20,11,15]},{"nombre":"Matrículas nuevas","valores":[29,7,4,1]}]}]]
+- Tienes DOS directivas invisibles (el usuario no las ve); emite máximo UNA
+  al FINAL de la respuesta:
+  A) [[viz: nombre_de_la_tool]] — grafica UN resultado crudo de una tool.
+     · Comparación de 2-8 categorías (sedes/facultades) → [[viz: get_facultades_kpis]].
+       Por defecto grafica INSCRITOS; para matrículas nuevas usa
+       campo=nuevos → [[viz: get_facultades_kpis campo=nuevos]].
+     · Serie temporal / evolución → [[viz: get_inscripciones_historico]].
+     · Embudo inscritos→matriculados de UN periodo → [[viz: get_estudiantes_kpis]].
+  B) [[vizdata: {json}]] — cuando la data a graficar la COMPUSISTE tú a partir
+     de varias llamadas o cálculos (ej. comparar 5 carreras por inscritos y
+     matrículas). NO uses [[viz: get_estudiantes_kpis]] para varias carreras:
+     eso solo grafica una. Usa vizdata con TODA la data:
+     [[vizdata: {"titulo":"Carreras de Ciencias Sociales — Sierra 2026",
+     "categorias":["Derecho","Trabajo Social","Comunicación"],
+     "series":[{"nombre":"Inscritos","valores":[112,45,30]},
+     {"nombre":"Matrículas nuevas","valores":[23,12,8]}]}]]
+     Reglas de vizdata: JSON válido en UNA línea; `valores` alineado 1:1 con
+     `categorias`; 1-3 series; elige las series que mejor respondan la pregunta.
+- Elige SIEMPRE el gráfico que mejor represente la data pedida (barras
+  comparativas para categorías, línea para evolución, embudo para conversión).
 - Las llamadas de contexto proactivo (comparativo, histórico de apoyo) NUNCA
   se grafican: solo alimentan tu lectura ejecutiva.
 - Máximo UNA directiva [[viz: ...]] por respuesta.
@@ -194,9 +213,7 @@ def _build_graph():
     builder.add_node("llm", llm_node)
     builder.add_node("tools", tools_node)
     builder.set_entry_point("llm")
-    builder.add_conditional_edges(
-        "llm", should_continue, {"tools": "tools", END: END}
-    )
+    builder.add_conditional_edges("llm", should_continue, {"tools": "tools", END: END})
     builder.add_edge("tools", "llm")
 
     # Persistencia: la da el volumen Docker langgraph-data:/app/.langgraph_api

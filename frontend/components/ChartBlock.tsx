@@ -6,7 +6,26 @@ import {
   FunnelChart, Funnel, LabelList,
 } from "recharts";
 
-export type ToolChartData = { toolName: string; data: unknown };
+export type VizSpec = {
+  titulo?: string;
+  categorias?: string[];
+  series?: { nombre: string; valores: number[] }[];
+};
+
+export type ToolChartData = {
+  toolName: string;
+  data: unknown;
+  metric?: string;
+  vizSpec?: VizSpec;
+};
+
+// Métrica a graficar en desgloses por sede/facultad → columna y título.
+const METRICAS: Record<string, { key: string; label: string }> = {
+  inscritos:    { key: "inscritos", label: "Inscritos" },
+  nuevos:       { key: "nuevos",    label: "Matrículas nuevas" },
+  matriculas:   { key: "nuevos",    label: "Matrículas nuevas" },
+  matriculados: { key: "nuevos",    label: "Matrículas nuevas" },
+};
 
 const C_BLUE  = "#003366";
 const C_GOLD  = "#E8A020";
@@ -187,23 +206,67 @@ function ComparativoChart({ data }: { data: Record<string, unknown>[] }) {
   );
 }
 
+/* ─── Gráfico a partir de datos que el agente calculó ([[vizdata: ...]]) ─── */
+// Barras horizontales agrupadas: categorías (ej. carreras) × N series
+// (ej. inscritos, matrículas nuevas). Sirve para comparar datos derivados
+// de varias llamadas, no un único resultado crudo de tool.
+function VizDataChart({ spec }: { spec: VizSpec }) {
+  const cats = (spec.categorias ?? []).map(String);
+  const series = (spec.series ?? []).filter((s) => s && Array.isArray(s.valores));
+  if (!cats.length || !series.length) return null;
+
+  const rows = cats.map((c, i) => {
+    const row: Record<string, unknown> = { name: c };
+    series.forEach((s) => { row[s.nombre] = n(s.valores[i]); });
+    return row;
+  });
+  const COLORS = [C_BLUE, C_GOLD, C_LIGHT, C_MUTED];
+  const truncate = (s: string) => (s.length > 26 ? s.slice(0, 24) + "…" : s);
+
+  return (
+    <div className="chart-block">
+      <p className="chart-block__title">{spec.titulo ?? "Comparativo"}</p>
+      <ResponsiveContainer width="100%" height={Math.max(200, cats.length * 40 + 40)}>
+        <BarChart data={rows} layout="vertical" margin={{ left: 8, right: 40 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#e0e6f0" />
+          <XAxis type="number" tick={{ fontSize: 11 }}
+                 tickFormatter={(v) => (v as number).toLocaleString("es-EC")} />
+          <YAxis type="category" dataKey="name" width={160}
+                 tick={{ fontSize: 10 }} tickFormatter={truncate} />
+          <Tooltip formatter={fmtNum} />
+          <Legend />
+          {series.map((s, i) => (
+            <Bar key={s.nombre} dataKey={s.nombre} fill={COLORS[i % COLORS.length]}
+                 radius={[0, 4, 4, 0]} isAnimationActive={false} />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 /* ─── Selector principal ─── */
-export function ChartBlock({ toolName, data }: ToolChartData) {
+export function ChartBlock({ toolName, data, metric, vizSpec }: ToolChartData) {
+  if (toolName === "vizdata" && vizSpec) return <VizDataChart spec={vizSpec} />;
   if (!data) return null;
+
+  const m = METRICAS[(metric ?? "inscritos").toLowerCase()] ?? METRICAS.inscritos;
 
   if (toolName === "get_estudiantes_kpis")
     return <FunnelKpi data={data as Record<string, unknown>} />;
 
   if (toolName === "get_sedes_kpis") {
     const list = Array.isArray(data) ? data : [];
-    return <HBarChart title="Inscritos por sede" data={list as Record<string, unknown>[]}
-                      nameKey="carrerasede" valueKey="inscritos" color={C_BLUE} />;
+    // /api/sedes no expone "nuevos"; si piden esa métrica, cae a inscritos.
+    const sm = m.key === "nuevos" ? METRICAS.inscritos : m;
+    return <HBarChart title={`${sm.label} por sede`} data={list as Record<string, unknown>[]}
+                      nameKey="carrerasede" valueKey={sm.key} color={C_BLUE} />;
   }
 
   if (toolName === "get_facultades_kpis") {
     const list = Array.isArray(data) ? data : [];
-    return <HBarChart title="Inscritos por facultad" data={list as Record<string, unknown>[]}
-                      nameKey="carrerafacultad" valueKey="inscritos" color={C_LIGHT} />;
+    return <HBarChart title={`${m.label} por facultad`} data={list as Record<string, unknown>[]}
+                      nameKey="carrerafacultad" valueKey={m.key} color={C_LIGHT} />;
   }
 
   if (toolName === "get_inscripciones_historico") {

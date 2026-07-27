@@ -34,3 +34,13 @@ docs/design-system-reference.html
 
 # Artefacto incremental de TypeScript (build)
 *.tsbuildinfo
+
+# Credenciales para revisión (privado, no publicar)
+ENV-para-profesor.txt
+
+# Material de presentación y artefactos de herramientas (no publicar)
+docs/*.pptx
+*:Zone.Identifier
+.agents/
+.playwright-cli/
+output/

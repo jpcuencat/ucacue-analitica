@@ -25,14 +25,35 @@ const GRAPH_ID = process.env.NEXT_PUBLIC_GRAPH_ID ?? "agent";
 
 const threadKey = (e?: string) => e ? `ucacue_thread_${e}` : "ucacue_thread_anonymous";
 
-const WIDGET_QUESTIONS = [
-  "¿Cuántos inscritos y matrículas nuevas hay en Sierra 2026?",
-  "¿Cuál es la tasa de conversión este periodo?",
-  "Desglosa los inscritos por sede",
-  "¿Qué facultades tienen más inscritos?",
-  "¿Cuál es la tasa de pérdida por cohorte?",
-  "¿Cómo van las inscripciones vs el año pasado?",
+// Pool de preguntas: cada conversación nueva carga un subconjunto aleatorio
+// (WIDGET_QUESTION_COUNT). Todas dan contexto (periodo, métricas, gráfico) para
+// que el agente arranque mostrando análisis, no una cifra suelta.
+const QUESTION_POOL = [
+  "Compara las carreras de [facultad] por inscritos y matrículas nuevas en Sierra 2026, con gráfico",
+  "¿Qué facultades lideran las matrículas en Sierra 2026 y cuáles están rezagadas? Muéstralo en gráfico",
+  "¿Cómo van las inscripciones de Sierra 2026 frente a Sierra 2025 a esta misma fecha?",
+  "Analiza la tasa de pérdida por cohorte e identifica dónde deberíamos preocuparnos",
+  "Muéstrame la evolución histórica de inscripciones y si el periodo actual va por buen camino",
+  "Desglosa inscritos y matrículas por sede en Sierra 2026 e identifica la brecha, con gráfico",
+  "¿Cuál es la tasa de conversión de inscrito a matriculado en Sierra 2026 y cómo se compara con el periodo anterior?",
+  "Compara las facultades de [sede] por inscritos en Sierra 2026, con gráfico",
+  "Dame el detalle por carrera de [facultad] en Sierra 2026, con gráfico",
+  "¿Qué sede tiene la mejor conversión de inscritos a matriculados en Sierra 2026?",
+  "¿Cuántos inscritos y reservas hay en Sierra 2026 y qué porcentaje ya se matriculó?",
+  "Compara la retención por cohorte entre carreras y señala las de mayor deserción",
 ];
+
+const WIDGET_QUESTION_COUNT = 6;
+
+// Fisher-Yates: subconjunto aleatorio sin repetición.
+function pickRandom<T>(arr: readonly T[], n: number): T[] {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy.slice(0, n);
+}
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
@@ -49,6 +70,11 @@ export function Chat({ userEmail, isWidget = false }: { userEmail?: string; isWi
   const [threadsList, setThreadsList] = useState<ThreadMeta[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [widgetHistoryOpen, setWidgetHistoryOpen] = useState(false);
+  // Subconjunto inicial determinista (evita mismatch de hidratación SSR/CSR);
+  // se baraja tras montar y en cada conversación nueva.
+  const [suggestions, setSuggestions] = useState<string[]>(
+    () => QUESTION_POOL.slice(0, WIDGET_QUESTION_COUNT),
+  );
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const key = threadKey(userEmail);
 
@@ -108,6 +134,13 @@ export function Chat({ userEmail, isWidget = false }: { userEmail?: string; isWi
   const toolCalls: ToolCall[] = (stream as any).toolCalls ?? []; // eslint-disable-line @typescript-eslint/no-explicit-any
   const { isLoading } = stream;
 
+  // Baraja las sugerencias en cada conversación vacía (montaje inicial y cada
+  // vez que se abre una nueva) para que no siempre salgan las mismas.
+  const isEmptyConversation = messages.length === 0;
+  useEffect(() => {
+    if (isEmptyConversation) setSuggestions(pickRandom(QUESTION_POOL, WIDGET_QUESTION_COUNT));
+  }, [threadId, isEmptyConversation]);
+
   const streamRef = useRef(stream);
   streamRef.current = stream;
   const inputRef = useRef(input);
@@ -135,28 +168,108 @@ export function Chat({ userEmail, isWidget = false }: { userEmail?: string; isWi
 
   const chartsByMsgIndex = useMemo<Map<number, ToolChartData[]>>(() => {
     const map = new Map<number, ToolChartData[]>();
-    let pending: ToolChartData[] = [];
+    type Pending = { toolName: string; data: unknown; args?: Record<string, unknown> };
+    let pending: Pending[] = [];
+    let lastHuman = ""; // texto del último turno del usuario (para saber si pidió gráfico)
+    const callArgs = new Map<string, Record<string, unknown>>(); // tool_call_id → args
+
+    const num = (v: unknown) => (v == null || v === "--" ? 0 : Number(v) || 0);
+
+    // ¿El usuario pidió explícitamente un gráfico en su mensaje?
+    const userWantsChart = (t: string) =>
+      /gr[aá]fic|graf[ií]|visualiz|diagrama|chart|barras|curva|torta|pastel/i.test(t);
+    const breakdownTools = ["get_facultades_kpis", "get_sedes_kpis", "get_carreras"];
+
+    // Si en el turno hubo VARIAS llamadas a get_estudiantes_kpis (ej. una por
+    // carrera), construimos el gráfico comparativo desde los resultados —
+    // sin depender de que el modelo emita [[vizdata]] (a prueba de modelo).
+    const comparativoEstudiantes = (results: Pending[]): ToolChartData | null => {
+      const rows = results.filter((p) => p.toolName === "get_estudiantes_kpis" && p.data);
+      if (rows.length < 2) return null;
+      const categorias = rows.map((r, idx) => {
+        const a = r.args ?? {};
+        return String(a.carrera_nombre ?? a.carrera ?? a.facultad ?? a.sede ?? `Ítem ${idx + 1}`);
+      });
+      const d = (r: Pending) => (r.data ?? {}) as Record<string, unknown>;
+      const spec = {
+        titulo: "Comparativo por carrera",
+        categorias,
+        series: [
+          { nombre: "Inscritos", valores: rows.map((r) => num(d(r).inscritos)) },
+          { nombre: "Matrículas nuevas", valores: rows.map((r) => num(d(r).matriculas_nuevas)) },
+        ],
+      };
+      return { toolName: "vizdata", data: null, vizSpec: spec };
+    };
+
     messages.forEach((msg, i) => {
       const type = (msg.type ?? msg.role ?? "").toLowerCase();
+      // Registrar args de cada tool_call para correlacionarlos con su resultado.
+      const calls = (msg.tool_calls ?? []) as { id?: string; args?: Record<string, unknown> }[];
+      calls.forEach((c) => { if (c.id) callArgs.set(c.id, c.args ?? {}); });
+
       if (type === "tool") {
         const raw = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? "");
         try {
           const parsed = JSON.parse(raw);
-          if (parsed?.ok && parsed.data != null)
-            pending.push({ toolName: msg.name ?? "", data: parsed.data });
+          if (parsed?.ok && parsed.data != null) {
+            const id = (msg as { tool_call_id?: string }).tool_call_id;
+            pending.push({ toolName: msg.name ?? "", data: parsed.data, args: id ? callArgs.get(id) : undefined });
+          }
         } catch { /* no JSON */ }
-      } else if (type === "ai" && !msg.tool_calls?.length && pending.length > 0) {
-        // El agente decide qué graficar vía la directiva [[viz: tool]] en su
-        // respuesta. Sin directiva no se muestra ningún gráfico (usará tabla o texto).
+      } else if (type === "ai" && !msg.tool_calls?.length) {
+        // El agente decide qué graficar. [[vizdata: {json}]] (datos que calculó)
+        // tiene prioridad; luego [[viz: tool campo=x]] (un resultado crudo).
         const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? "");
-        const wanted = [...text.matchAll(/\[\[viz:\s*([a-z_]+)\s*\]\]/gi)].map((m) => m[1]);
-        if (wanted.length > 0) {
-          // Máximo un gráfico: el último resultado de la primera tool indicada.
-          const match = [...pending].reverse().find((p) => wanted.includes(p.toolName));
-          if (match) map.set(i, [match]);
+        let chart: ToolChartData[] | null = null;
+
+        // 1) [[vizdata: {json}]] — la data la compuso el modelo.
+        const vd = text.match(/\[\[vizdata:\s*(\{[\s\S]+?\})\s*\]\]/i);
+        if (vd) {
+          try {
+            chart = [{ toolName: "vizdata", data: null, vizSpec: JSON.parse(vd[1]) }];
+          } catch { /* JSON inválido: seguimos a los fallbacks */ }
         }
+
+        // 2) [[viz: tool campo=x]] — un resultado crudo elegido por el modelo.
+        if (!chart && pending.length > 0) {
+          const wanted = [...text.matchAll(/\[\[viz:\s*([a-z_]+)(?:\s+campo=([a-z_]+))?\s*\]\]/gi)]
+            .map((m) => ({ tool: m[1], metric: m[2] }));
+          const w = wanted.find((x) => pending.some((p) => p.toolName === x.tool));
+          if (w?.tool === "get_estudiantes_kpis") {
+            // Varias fichas de estudiantes → comparativo; una sola → embudo.
+            const comp = comparativoEstudiantes(pending);
+            if (comp) chart = [comp];
+            else {
+              const single = [...pending].reverse().find((p) => p.toolName === w.tool);
+              if (single) chart = [{ toolName: single.toolName, data: single.data, metric: w.metric }];
+            }
+          } else if (w) {
+            const match = [...pending].reverse().find((p) => p.toolName === w.tool);
+            if (match) chart = [{ toolName: match.toolName, data: match.data, metric: w.metric }];
+          }
+        }
+
+        // 3) A prueba de modelo: el usuario pidió gráfico pero el modelo no
+        //    emitió (o emitió mal) la directiva. Graficamos con la data del
+        //    turno igual: comparativo de carreras > desglose > histórico > embudo.
+        if (!chart && pending.length > 0 && userWantsChart(lastHuman)) {
+          const metric = /matr[ií]cul|nuevos/i.test(lastHuman) ? "nuevos" : undefined;
+          const comp = comparativoEstudiantes(pending);
+          if (comp) chart = [comp];
+          else {
+            const pick =
+              [...pending].reverse().find((p) => breakdownTools.includes(p.toolName)) ??
+              [...pending].reverse().find((p) => p.toolName === "get_inscripciones_historico") ??
+              [...pending].reverse().find((p) => p.toolName === "get_estudiantes_kpis");
+            if (pick) chart = [{ toolName: pick.toolName, data: pick.data, metric }];
+          }
+        }
+
+        if (chart) map.set(i, chart);
         pending = [];
       } else if (type === "human") {
+        lastHuman = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? "");
         pending = [];
       }
     });
@@ -268,10 +381,13 @@ export function Chat({ userEmail, isWidget = false }: { userEmail?: string; isWi
           {messages.length === 0 ? (
             <div className="empty">
               <p>Selecciona una pregunta sugerida o escribe tu consulta.</p>
-              <p className="empty__hint">El asistente consulta datos reales de UCACUE.</p>
+              <p className="empty__hint">
+                El asistente consulta datos reales de UCACUE.
+                {isWidget && " Reemplaza lo que está entre [corchetes] con la facultad o sede que quieras."}
+              </p>
               {isWidget && (
                 <ul className="widget-suggestions">
-                  {WIDGET_QUESTIONS.map((q) => (
+                  {suggestions.map((q) => (
                     <li key={q}>
                       <button
                         className="widget-suggestion-btn"

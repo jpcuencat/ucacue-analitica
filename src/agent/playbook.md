@@ -37,20 +37,25 @@ NUNCA respondas "no se puede" si el resultado es derivable componiendo herramien
   otro periodo debe ser al mismo corte (`get_comparativo_periodo`), nunca contra
   el total cerrado del periodo anterior.
 
-## Significado de los campos en desgloses (sedes/facultades/carreras)
-El desglose devuelve `inscritos`, `pagados`, `nuevos`, `repetidores`. NO son
-un embudo `inscritos → pagados`; son medidas distintas:
+## Campos en desgloses (sedes/facultades/carreras)
+El desglose devuelve `inscritos`, `nuevos`, `repetidores` (el campo `pagados`
+se retira a propósito en la capa de datos y NO debe aparecer en respuestas).
 - `inscritos`: personas inscritas en el periodo.
 - `nuevos`: matriculados nuevos (equivale a "matriculados" del comparativo).
-- `pagados` = `Total_Pagos`: total de pagos/matrículas pagadas, que INCLUYE a
-  los repetidores y otros flujos de pago. Por eso `pagados` PUEDE superar a
-  `inscritos` sin que sea un error (ej. Salud: 589 pagados vs 518 inscritos =
-  normal, porque los repetidores pagan pero no cuentan como inscritos del
-  periodo). En el acumulado se confirma: pagados ≈ nuevos + repetidores.
-Reglas al responder:
-- NUNCA presentes `pagados > inscritos` como inconsistencia, duplicidad o dato
-  a vigilar: es el comportamiento esperado de dos métricas diferentes.
-- Para preguntas de INSCRIPCIONES, el embudo real es inscritos → nuevos
-  (matriculados). Menciona `pagados` solo si lo piden, aclarando que es total
-  de pagos (incluye repetidores), no un subconjunto de inscritos.
-- No mezcles `nuevos` (del desglose) con `pagados`: son cosas distintas.
+- El embudo de inscripciones es inscritos → nuevos (matriculados). No inventes
+  ni pidas otras métricas de pago para estos desgloses.
+
+## Detalle por carrera de una facultad (enriquecer, no dejar solo inscritos)
+`get_carreras` es un listado ligero: solo trae `inscritos` por carrera (nada
+de reservas/matrículas/tasas), y devuelve códigos granulares con muchas filas
+en `inscritos: null` que NO aportan. Los KPIs completos por carrera solo los
+da `get_estudiantes_kpis` filtrando una carrera a la vez. Por eso, cuando
+pidan "detalle/desglose por carrera de una facultad":
+1. Llama `get_carreras(periodo, facultad=...)` para ver las carreras.
+2. DESCARTA las filas con `inscritos` null o 0 y ordena por inscritos desc.
+3. Para las TOP 5 carreras reales, llama `get_estudiantes_kpis(
+   carrera_nombre=<CARRERANOMBRE>, periodo=...)` una vez por carrera y arma
+   una TABLA comparativa: inscritos · matrículas nuevas · tasa de conversión.
+4. Aclara que se muestran las principales (el detalle completo por carrera
+   requiere una consulta por carrera; por eso se acota a las top 5).
+No entregues una tabla de solo `inscritos`: eso aporta poco.

@@ -39,8 +39,11 @@ type Props = { message: AnyMessage; chartData?: ToolChartData[] };
 
 export function MessageBubble({ message, chartData }: Props) {
   const role = roleOf(message);
-  // Ocultar la directiva [[viz: ...]] (completa, o truncada durante el streaming).
+  // Ocultar las directivas [[vizdata: {...}]] y [[viz: ...]] del texto mostrado
+  // (completas, o truncadas mientras llega el streaming).
   const text = contentToText(message.content, message.text)
+    .replace(/\[\[vizdata:\s*\{[\s\S]*?\}\s*\]\]/gi, "")
+    .replace(/\[\[vizdata:[\s\S]*$/i, "")
     .replace(/\[\[viz:[^\]]*\]\]/gi, "")
     .replace(/\[\[viz:[^\]]*$/i, "")
     .trimEnd();
@@ -63,7 +66,7 @@ export function MessageBubble({ message, chartData }: Props) {
         </div>
       )}
       {role === "assistant" && chartData?.map((cd, i) => (
-        <ChartBlock key={i} toolName={cd.toolName} data={cd.data} />
+        <ChartBlock key={i} {...cd} />
       ))}
     </article>
   );

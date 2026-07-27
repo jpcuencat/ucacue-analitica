@@ -106,14 +106,30 @@ def get_estudiantes_kpis(
     return resp
 
 
+def _ocultar_pagados(resp: dict) -> dict:
+    """Elimina 'pagados' de los desgloses antes de devolverlos.
+
+    `pagados` (=Total_Pagos) NO es un subconjunto de inscritos: incluye
+    repetidores y otros flujos de pago, así que puede superar a inscritos y
+    confunde en respuestas de inscripciones. Se retira de forma determinista
+    para que el agente nunca lo presente. HTTP intacto; solo se filtra la vista.
+    """
+    data = resp.get("data")
+    if isinstance(data, list):
+        for row in data:
+            if isinstance(row, dict):
+                row.pop("pagados", None)
+    return resp
+
+
 @tool
 def get_sedes_kpis() -> dict:
-    """Totales de inscritos/pagados/carreras por SEDE (una fila por sede).
+    """Totales de inscritos y carreras por SEDE (una fila por sede).
 
     Úsala para responder "desglose por sede" o comparar sedes en UNA sola
     llamada. No requiere parámetros.
     """
-    return _puerto.get("/api/sedes", {})
+    return _ocultar_pagados(_puerto.get("/api/sedes", {}))
 
 
 @tool
@@ -126,7 +142,7 @@ def get_facultades_kpis(
     - periodo: código AAAAN (ej. "20261").
     - sede: nombre de sede; vacío = todas.
     """
-    return _puerto.get("/api/facultades", {"periodo": periodo, "sede": sede})
+    return _ocultar_pagados(_puerto.get("/api/facultades", {"periodo": periodo, "sede": sede}))
 
 
 @tool
@@ -153,7 +169,7 @@ def get_carreras(
     }
     if selector:
         params["selector"] = "true"  # el API espera el booleano como texto
-    return _puerto.get("/api/carreras", params)
+    return _ocultar_pagados(_puerto.get("/api/carreras", params))
 
 
 @tool
