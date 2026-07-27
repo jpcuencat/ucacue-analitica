@@ -195,7 +195,9 @@ def _build_graph():
 
     def llm_node(state: MessagesState) -> dict:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        content = SYSTEM_PROMPT.format(current_time=now)
+        # .replace (no .format): el prompt contiene llaves {} de los ejemplos
+        # JSON de [[vizdata]], que str.format interpretaría como campos y rompería.
+        content = SYSTEM_PROMPT.replace("{current_time}", now)
         playbook = _load_playbook()
         if playbook:
             content += "\n\n" + playbook
