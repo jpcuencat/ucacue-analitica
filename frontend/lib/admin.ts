@@ -1,5 +1,3 @@
-import { randomBytes } from "crypto";
-
 // Administradores autorizados a gestionar usuarios. Lista por env ADMIN_EMAILS
 // (correos separados por coma); por defecto solo la cuenta de analítica.
 export function isAdmin(email: string | null | undefined): boolean {
@@ -9,13 +7,10 @@ export function isAdmin(email: string | null | undefined): boolean {
   return admins.includes(email.trim().toLowerCase());
 }
 
-// Clave temporal aleatoria que cumple la política (10+ chars, mayúscula,
-// minúscula y dígito). El prefijo/sufijo garantizan la política; la entropía
-// real vive en el bloque aleatorio del medio.
-export function genTempPassword(): string {
-  const medio = randomBytes(9).toString("base64").replace(/[+/=]/g, "").slice(0, 10);
-  return `Ua${medio}7`;
-}
+// Clave inicial default para altas y reseteos. El usuario entra con esta y en
+// su primer ingreso el sistema lo obliga a cambiarla (must_change_password).
+// Cumple la política (10+ chars, mayúscula, minúscula y dígito).
+export const CLAVE_INICIAL_DEFAULT = "CambiarClaveUCACUE1";
 
 // Normaliza el correo para evitar el bug de sensibilidad a mayúsculas en el
 // login (WHERE email = $1). Siempre se guarda en minúsculas y sin espacios.

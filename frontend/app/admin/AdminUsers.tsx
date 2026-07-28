@@ -119,8 +119,8 @@ export function AdminUsers({ adminEmail }: { adminEmail: string }) {
           <p className="admin-cred__row"><span>Correo:</span> <code>{cred.email}</code></p>
           <p className="admin-cred__row"><span>Clave temporal:</span> <code>{cred.tempPassword}</code></p>
           <p className="admin-cred__hint">
-            En su primer ingreso deberá cambiarla (mínimo 10 caracteres con mayúscula, minúscula y número).
-            Esta clave no se vuelve a mostrar.
+            Es la clave inicial default. En su primer ingreso el sistema lo obligará a cambiarla
+            (mínimo 10 caracteres con mayúscula, minúscula y número).
           </p>
           <button className="btn" onClick={() => setCred(null)}>Entendido</button>
         </div>

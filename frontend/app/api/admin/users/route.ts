@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { verifyToken, COOKIE_NAME } from "@/lib/auth";
-import { isAdmin, genTempPassword, normalizarEmail } from "@/lib/admin";
+import { isAdmin, CLAVE_INICIAL_DEFAULT, normalizarEmail } from "@/lib/admin";
 import {
   listUsers,
   adminCreateUser,
@@ -35,7 +35,7 @@ export async function POST(req: Request) {
   const correo = normalizarEmail(email ?? "");
   if (!EMAIL_RE.test(correo)) return NextResponse.json({ error: "Correo inválido." }, { status: 400 });
 
-  const tempPassword = genTempPassword();
+  const tempPassword = CLAVE_INICIAL_DEFAULT;
   const estado = await adminCreateUser(correo, tempPassword);
   if (estado === "exists") {
     return NextResponse.json({ error: "Ese usuario ya existe. Usa 'Resetear clave' si quieres una nueva." }, { status: 409 });
@@ -50,7 +50,7 @@ export async function PATCH(req: Request) {
   const correo = normalizarEmail(email ?? "");
   if (!correo) return NextResponse.json({ error: "email requerido" }, { status: 400 });
 
-  const tempPassword = genTempPassword();
+  const tempPassword = CLAVE_INICIAL_DEFAULT;
   const ok = await adminResetPassword(correo, tempPassword);
   if (!ok) return NextResponse.json({ error: "Usuario no encontrado." }, { status: 404 });
   return NextResponse.json({ ok: true, email: correo, tempPassword });
