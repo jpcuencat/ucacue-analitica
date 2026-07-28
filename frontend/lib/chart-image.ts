@@ -53,10 +53,13 @@ export function renderBarChartPNG(spec: VizSpec): Buffer {
     return canvas.toBuffer("image/png");
   }
 
+  // Con muchas categorías o nombres largos, rotamos las etiquetas para que no
+  // se encimen (típico en facultades). Si no, se dibujan horizontales.
+  const rotarLabels = cats.length > 5 || cats.some((c) => c.length > 12);
   const mL = 70;
   const mR = 30;
   const plotTop = 64;
-  const mB = 96; // etiquetas de categoría + leyenda
+  const mB = rotarLabels ? 168 : 96; // etiquetas de categoría + leyenda
   const plotX0 = mL;
   const plotX1 = W - mR;
   const plotW = plotX1 - plotX0;
@@ -121,8 +124,20 @@ export function renderBarChartPNG(spec: VizSpec): Buffer {
     // Etiqueta de categoría
     ctx.fillStyle = AXIS;
     ctx.font = "12px sans-serif";
-    ctx.textBaseline = "top";
-    ctx.fillText(truncate(cats[i], 16), plotX0 + i * groupW + groupW / 2, plotY1 + 8);
+    const cx = plotX0 + i * groupW + groupW / 2;
+    if (rotarLabels) {
+      ctx.save();
+      ctx.translate(cx, plotY1 + 10);
+      ctx.rotate(-Math.PI / 5); // ~-36°
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      ctx.fillText(truncate(cats[i], 28), 0, 0);
+      ctx.restore();
+      ctx.textAlign = "center";
+    } else {
+      ctx.textBaseline = "top";
+      ctx.fillText(truncate(cats[i], 16), cx, plotY1 + 8);
+    }
   }
 
   // Leyenda (abajo, centrada)
