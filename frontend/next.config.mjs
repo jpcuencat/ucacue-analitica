@@ -2,6 +2,9 @@
 const nextConfig = {
   output: "standalone",
   transpilePackages: ["@langchain/langgraph-sdk"],
+  // El binario nativo de canvas (render del gráfico para WhatsApp) no debe
+  // empaquetarse: se carga vía require en runtime.
+  serverExternalPackages: ["@napi-rs/canvas"],
   rewrites: async () => [
     {
       source: "/api/lg/:path*",

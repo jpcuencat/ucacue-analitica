@@ -404,7 +404,14 @@ export function Chat({ userEmail, isWidget = false }: { userEmail?: string; isWi
               const t = (msg.type ?? msg.role ?? "").toLowerCase();
               if (t === "tool") return null;
               if (t === "ai" && msg.tool_calls?.length) return null;
-              return <MessageBubble key={msg.id ?? i} message={msg} chartData={chartsByMsgIndex.get(i)} />;
+              return (
+                <MessageBubble
+                  key={msg.id ?? i}
+                  message={msg}
+                  chartData={chartsByMsgIndex.get(i)}
+                  canSend={!isWidget && !!userEmail}
+                />
+              );
             })
           )}
           {isLoading && (
