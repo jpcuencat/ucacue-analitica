@@ -25,6 +25,54 @@ function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1) + "…" : s;
 }
 
+// Tarjeta de texto: imagen de respaldo cuando la respuesta no tiene gráfico
+// (la plantilla de WhatsApp siempre necesita una imagen en el header).
+export function renderTextCardPNG(titulo: string, cuerpo: string): Buffer {
+  const W = 920;
+  const H = 520;
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "#2563eb";
+  ctx.fillRect(0, 0, W, 8); // franja superior
+
+  const pad = 56;
+  ctx.fillStyle = TEXT;
+  ctx.font = "bold 26px sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillText(truncate(titulo, 46), pad, 40);
+
+  // Cuerpo con ajuste de línea por palabras.
+  ctx.font = "18px sans-serif";
+  ctx.fillStyle = "#1e293b";
+  const maxW = W - pad * 2;
+  const lineH = 27;
+  let y = 96;
+  for (const rawLine of cuerpo.split("\n")) {
+    let line = "";
+    for (const word of rawLine.split(/\s+/)) {
+      const probe = line ? `${line} ${word}` : word;
+      if (ctx.measureText(probe).width > maxW && line) {
+        ctx.fillText(line, pad, y);
+        y += lineH;
+        line = word;
+      } else {
+        line = probe;
+      }
+      if (y > H - 60) break;
+    }
+    if (y > H - 60) {
+      ctx.fillText(line + " …", pad, y);
+      break;
+    }
+    ctx.fillText(line, pad, y);
+    y += lineH;
+  }
+  return canvas.toBuffer("image/png");
+}
+
 // Renderiza un gráfico de barras agrupadas (1-3 series) a PNG.
 export function renderBarChartPNG(spec: VizSpec): Buffer {
   const W = 920;
