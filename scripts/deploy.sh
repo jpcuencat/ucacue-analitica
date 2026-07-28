@@ -53,6 +53,7 @@ scp "$LOCAL/frontend/lib/auth.ts" \
     "$LOCAL/frontend/lib/db.ts" \
     "$LOCAL/frontend/lib/db-migrate.ts" \
     "$LOCAL/frontend/lib/db-users.ts" \
+    "$LOCAL/frontend/lib/admin.ts" \
     "$LOCAL/frontend/lib/request-security.ts" \
     "$LOCAL/frontend/lib/rate-limit.ts" \
     "$LOCAL/frontend/lib/threads-client.ts" \
@@ -83,6 +84,14 @@ scp "$LOCAL/frontend/app/api/threads/[id]/route.ts" \
 scp "$LOCAL/frontend/scripts/seed-users.js" \
     "$LOCAL/frontend/scripts/seed-revision.js" \
     "$HOST:$REMOTE/frontend/scripts/"
+
+# Pantalla de administración de usuarios (/admin)
+ssh "$HOST" "mkdir -p $REMOTE/frontend/app/admin $REMOTE/frontend/app/api/admin/users"
+scp "$LOCAL/frontend/app/admin/page.tsx" \
+    "$LOCAL/frontend/app/admin/AdminUsers.tsx" \
+    "$HOST:$REMOTE/frontend/app/admin/"
+scp "$LOCAL/frontend/app/api/admin/users/route.ts" \
+    "$HOST:$REMOTE/frontend/app/api/admin/users/"
 
 ssh "$HOST" "mkdir -p $REMOTE/frontend/public"
 scp "$LOCAL/frontend/public/widget-demo.html" "$HOST:$REMOTE/frontend/public/"

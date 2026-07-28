@@ -45,3 +45,46 @@ export async function getUserIdByEmail(email: string): Promise<string | null> {
   );
   return rows[0]?.id ?? null;
 }
+
+// ─── Administración de usuarios (pantalla /admin) ───
+
+export type AdminUser = {
+  id: string;
+  email: string;
+  must_change_password: boolean;
+  created_at: string;
+};
+
+export async function listUsers(): Promise<AdminUser[]> {
+  const { rows } = await getPool().query<AdminUser>(
+    "SELECT id, email, must_change_password, created_at FROM users ORDER BY email ASC",
+  );
+  return rows;
+}
+
+// Alta: NO pisa a un usuario existente (DO NOTHING). Devuelve si se creó.
+export async function adminCreateUser(email: string, tempPassword: string): Promise<"created" | "exists"> {
+  const password_hash = await hash(tempPassword, 12);
+  const res = await getPool().query(
+    `INSERT INTO users (email, password_hash, must_change_password)
+     VALUES ($1, $2, TRUE)
+     ON CONFLICT (email) DO NOTHING`,
+    [email, password_hash],
+  );
+  return res.rowCount ? "created" : "exists";
+}
+
+// Reseteo: fija una nueva clave temporal y vuelve a exigir cambio.
+export async function adminResetPassword(email: string, tempPassword: string): Promise<boolean> {
+  const password_hash = await hash(tempPassword, 12);
+  const res = await getPool().query(
+    `UPDATE users SET password_hash = $2, must_change_password = TRUE WHERE email = $1`,
+    [email, password_hash],
+  );
+  return Boolean(res.rowCount);
+}
+
+export async function adminDeleteUser(email: string): Promise<boolean> {
+  const res = await getPool().query("DELETE FROM users WHERE email = $1", [email]);
+  return Boolean(res.rowCount);
+}
