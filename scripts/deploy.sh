@@ -42,6 +42,7 @@ scp "$LOCAL/frontend/middleware.ts" \
 
 scp "$LOCAL/frontend/app/globals.css" \
     "$LOCAL/frontend/app/layout.tsx" \
+    "$LOCAL/frontend/app/page.tsx" \
     "$HOST:$REMOTE/frontend/app/"
 
 ssh "$HOST" "mkdir -p $REMOTE/frontend/app/login"
@@ -57,6 +58,11 @@ scp "$LOCAL/frontend/lib/auth.ts" \
     "$LOCAL/frontend/lib/request-security.ts" \
     "$LOCAL/frontend/lib/rate-limit.ts" \
     "$LOCAL/frontend/lib/threads-client.ts" \
+    "$LOCAL/frontend/lib/viz-spec.ts" \
+    "$LOCAL/frontend/lib/chart-image.ts" \
+    "$LOCAL/frontend/lib/whatsapp.ts" \
+    "$LOCAL/frontend/lib/wa-db.ts" \
+    "$LOCAL/frontend/lib/report-runner.ts" \
     "$HOST:$REMOTE/frontend/lib/"
 
 # Cambio de contraseña obligatorio (primer acceso)
@@ -92,6 +98,12 @@ scp "$LOCAL/frontend/app/admin/page.tsx" \
     "$HOST:$REMOTE/frontend/app/admin/"
 scp "$LOCAL/frontend/app/api/admin/users/route.ts" \
     "$HOST:$REMOTE/frontend/app/api/admin/users/"
+
+# Envío a WhatsApp (on-demand por usuario)
+ssh "$HOST" "mkdir -p $REMOTE/frontend/app/api/reports/send $REMOTE/frontend/app/api/wa-recipients $REMOTE/frontend/app/api/wa/test"
+scp "$LOCAL/frontend/app/api/reports/send/route.ts" "$HOST:$REMOTE/frontend/app/api/reports/send/"
+scp "$LOCAL/frontend/app/api/wa-recipients/route.ts" "$HOST:$REMOTE/frontend/app/api/wa-recipients/"
+scp "$LOCAL/frontend/app/api/wa/test/route.ts" "$HOST:$REMOTE/frontend/app/api/wa/test/"
 
 ssh "$HOST" "mkdir -p $REMOTE/frontend/public"
 scp "$LOCAL/frontend/public/widget-demo.html" "$HOST:$REMOTE/frontend/public/"
