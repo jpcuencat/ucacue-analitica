@@ -64,7 +64,7 @@ function formatDate(iso: string): string {
   return d.toLocaleDateString("es-EC", { day: "2-digit", month: "2-digit" });
 }
 
-export function Chat({ userEmail, isWidget = false }: { userEmail?: string; isWidget?: boolean }) {
+export function Chat({ userEmail, isWidget = false, canSend = false }: { userEmail?: string; isWidget?: boolean; canSend?: boolean }) {
   const [input, setInput] = useState("");
   const [threadId, setThreadId] = useState<string | undefined>(undefined);
   const [threadsList, setThreadsList] = useState<ThreadMeta[]>([]);
@@ -409,7 +409,7 @@ export function Chat({ userEmail, isWidget = false }: { userEmail?: string; isWi
                   key={msg.id ?? i}
                   message={msg}
                   chartData={chartsByMsgIndex.get(i)}
-                  canSend={!isWidget && !!userEmail}
+                  canSend={canSend}
                 />
               );
             })

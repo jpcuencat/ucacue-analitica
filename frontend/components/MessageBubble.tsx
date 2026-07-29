@@ -6,7 +6,6 @@ import remarkGfm from "remark-gfm";
 import type { AnyMessage } from "@/lib/types";
 import { ChartBlock } from "@/components/ChartBlock";
 import type { ToolChartData } from "@/components/ChartBlock";
-import { WhatsAppModal } from "@/components/WhatsAppModal";
 import { toVizSpec } from "@/lib/viz-spec";
 
 function contentToText(content: unknown, fallback?: string): string {
@@ -40,8 +39,11 @@ const ROLE_LABEL: Record<string, string> = { user: "Tú", assistant: "Asistente"
 
 type Props = { message: AnyMessage; chartData?: ToolChartData[]; canSend?: boolean };
 
+type WaState = "idle" | "sending" | "sent" | "error";
+
 export function MessageBubble({ message, chartData, canSend = false }: Props) {
-  const [waOpen, setWaOpen] = useState(false);
+  const [waState, setWaState] = useState<WaState>("idle");
+  const [waMsg, setWaMsg] = useState<string>("");
   const role = roleOf(message);
   // Ocultar las directivas [[vizdata: {...}]] y [[viz: ...]] del texto mostrado
   // (completas, o truncadas mientras llega el streaming).
@@ -74,19 +76,39 @@ export function MessageBubble({ message, chartData, canSend = false }: Props) {
       ))}
       {role === "assistant" && canSend && text.trim().length > 40 && (
         <div className="bubble__actions">
-          <button className="btn--wa" onClick={() => setWaOpen(true)}>
-            📲 Enviar a WhatsApp
+          <button
+            className="btn--wa"
+            disabled={waState === "sending"}
+            onClick={async () => {
+              setWaState("sending");
+              setWaMsg("");
+              const spec = chartData && chartData.length ? toVizSpec(chartData[0]) : null;
+              try {
+                const res = await fetch("/api/reports/send", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ texto: text, spec, titulo: spec?.titulo }),
+                });
+                const body = await res.json().catch(() => ({}));
+                if (!res.ok || !body.ok) {
+                  setWaState("error");
+                  setWaMsg(body.error ?? "No se pudo enviar.");
+                } else {
+                  setWaState("sent");
+                  setWaMsg("Enviado a tu WhatsApp ✓");
+                }
+              } catch (e) {
+                setWaState("error");
+                setWaMsg((e as Error).message);
+              }
+            }}
+          >
+            {waState === "sending" ? "Enviando…" : waState === "sent" ? "✓ Enviado" : "📲 Enviar a WhatsApp"}
           </button>
+          {waMsg && (
+            <span className={`bubble__wa-status bubble__wa-status--${waState}`}>{waMsg}</span>
+          )}
         </div>
-      )}
-      {waOpen && (
-        <WhatsAppModal
-          open={waOpen}
-          onClose={() => setWaOpen(false)}
-          texto={text}
-          spec={chartData && chartData.length ? toVizSpec(chartData[0]) : null}
-          titulo={(chartData && chartData.length ? toVizSpec(chartData[0])?.titulo : undefined) ?? undefined}
-        />
       )}
     </article>
   );

@@ -2,12 +2,12 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { verifyToken, COOKIE_NAME } from "@/lib/auth";
 import { waConfigurado, uploadMedia, sendReportTemplate } from "@/lib/whatsapp";
-import { getRecipientsByIds, logSend } from "@/lib/wa-db";
+import { logSend, normalizarTelefono } from "@/lib/wa-db";
+import { getWaProfile } from "@/lib/db-users";
 import { runReport, type ReportResult } from "@/lib/report-runner";
 import { renderBarChartPNG, renderTextCardPNG, type VizSpec } from "@/lib/chart-image";
 
 type Body = {
-  recipientIds?: string[];
   pregunta?: string;
   texto?: string; // respuesta ya calculada en el cliente (on-demand)
   spec?: VizSpec | null;
@@ -31,11 +31,14 @@ function resumenParaWhatsApp(texto: string): string {
     .slice(0, 900);
 }
 
+// Envía la respuesta al WhatsApp del PROPIO usuario logueado.
+// El destino es users.telefono; el botón solo aparece si users.wa_view=TRUE.
 export async function POST(req: Request) {
   const jar = await cookies();
   const token = jar.get(COOKIE_NAME)?.value;
   const payload = token ? await verifyToken(token) : null;
-  if (!payload?.email) return NextResponse.json({ error: "No autorizado" }, { status: 401 });
+  const email = typeof payload?.email === "string" ? payload.email : null;
+  if (!email) return NextResponse.json({ error: "No autorizado" }, { status: 401 });
 
   if (!waConfigurado()) {
     return NextResponse.json(
@@ -44,14 +47,25 @@ export async function POST(req: Request) {
     );
   }
 
-  const body = (await req.json().catch(() => ({}))) as Body;
-  const ids = body.recipientIds ?? [];
-  if (!ids.length) return NextResponse.json({ error: "Elige al menos un destinatario." }, { status: 400 });
-
-  const destinatarios = await getRecipientsByIds(ids);
-  if (!destinatarios.length) {
-    return NextResponse.json({ error: "Ningún destinatario válido/activo." }, { status: 400 });
+  // Autorización + destino: ambos vienen del perfil del usuario en la DB.
+  let perfil;
+  try {
+    perfil = await getWaProfile(email);
+  } catch {
+    return NextResponse.json({ error: "No se pudo leer el perfil del usuario." }, { status: 500 });
   }
+  if (!perfil?.waView) {
+    return NextResponse.json({ error: "Tu usuario no tiene habilitado el envío a WhatsApp." }, { status: 403 });
+  }
+  const telefono = normalizarTelefono(perfil.telefono ?? "");
+  if (telefono.length < 8) {
+    return NextResponse.json(
+      { error: "Tu usuario no tiene un número de WhatsApp válido configurado." },
+      { status: 400 },
+    );
+  }
+
+  const body = (await req.json().catch(() => ({}))) as Body;
 
   // Texto + gráfico: usar lo ya calculado (on-demand) o correr el agente.
   let result: ReportResult;
@@ -78,20 +92,15 @@ export async function POST(req: Request) {
   const up = await uploadMedia(png);
   if (!up.ok) return NextResponse.json({ error: `No se pudo subir la imagen: ${up.error}` }, { status: 502 });
 
-  // Enviar a cada destinatario (la media se reutiliza).
-  const resultados = [];
-  for (const d of destinatarios) {
-    const r = await sendReportTemplate({ to: d.telefono, imageMediaId: up.mediaId, bodyText: cuerpo });
-    await logSend({
-      pregunta: body.pregunta ?? "[on-demand]",
-      telefono: d.telefono,
-      estado: r.ok ? "enviado" : "error",
-      waMessageId: r.ok ? r.messageId : null,
-      error: r.ok ? null : r.error,
-    });
-    resultados.push({ nombre: d.nombre, telefono: d.telefono, ok: r.ok, error: r.ok ? undefined : r.error });
-  }
+  const r = await sendReportTemplate({ to: telefono, imageMediaId: up.mediaId, bodyText: cuerpo });
+  await logSend({
+    pregunta: body.pregunta ?? "[on-demand]",
+    telefono,
+    estado: r.ok ? "enviado" : "error",
+    waMessageId: r.ok ? r.messageId : null,
+    error: r.ok ? null : r.error,
+  });
 
-  const enviados = resultados.filter((r) => r.ok).length;
-  return NextResponse.json({ ok: enviados > 0, enviados, total: resultados.length, resultados });
+  if (!r.ok) return NextResponse.json({ ok: false, error: r.error }, { status: 502 });
+  return NextResponse.json({ ok: true, telefono, messageId: r.messageId });
 }

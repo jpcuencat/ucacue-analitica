@@ -20,6 +20,12 @@ const SQL = `
   ALTER TABLE users ADD COLUMN IF NOT EXISTS
     must_change_password BOOLEAN NOT NULL DEFAULT TRUE;
 
+  -- Envío a WhatsApp por usuario: wa_view habilita el botón "Enviar a WhatsApp"
+  -- (default FALSE = nadie lo ve); telefono es el ÚNICO destino de ese usuario
+  -- (su propio número, E.164 sin '+').
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS wa_view BOOLEAN NOT NULL DEFAULT FALSE;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS telefono VARCHAR(20);
+
   -- Rate limiting de login (OWASP A07): intentos fallidos por email+ip.
   CREATE TABLE IF NOT EXISTS login_attempts (
     id           BIGSERIAL   PRIMARY KEY,

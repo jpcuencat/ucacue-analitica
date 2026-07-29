@@ -38,6 +38,19 @@ export async function changePassword(email: string, newPassword: string): Promis
   );
 }
 
+export type WaProfile = { waView: boolean; telefono: string | null };
+
+// Perfil de envío a WhatsApp de un usuario: si ve el botón (wa_view) y a qué
+// número propio se le manda (telefono). Devuelve null si el usuario no existe.
+export async function getWaProfile(email: string): Promise<WaProfile | null> {
+  const { rows } = await getPool().query<{ wa_view: boolean; telefono: string | null }>(
+    "SELECT wa_view, telefono FROM users WHERE email = $1 LIMIT 1",
+    [email],
+  );
+  if (!rows.length) return null;
+  return { waView: rows[0].wa_view, telefono: rows[0].telefono };
+}
+
 export async function getUserIdByEmail(email: string): Promise<string | null> {
   const { rows } = await getPool().query<{ id: string }>(
     "SELECT id FROM users WHERE email = $1 LIMIT 1",

@@ -1044,6 +1044,15 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 }
 .btn--wa:hover { background: #1ebe57; }
 .btn--wa:active { transform: scale(0.97); }
+.btn--wa:disabled { opacity: 0.6; cursor: default; }
+
+.bubble__wa-status {
+  margin-left: 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.bubble__wa-status--sent  { color: var(--success); }
+.bubble__wa-status--error { color: var(--error); }
 
 .wa-overlay {
   position: fixed;
