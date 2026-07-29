@@ -32,6 +32,10 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs \
  && adduser  --system --uid 1001 nextjs
 
+# Fuentes para @napi-rs/canvas (render de gráficos a PNG). Sin esto, en Alpine
+# el texto del gráfico sale vacío (solo se dibujan las barras).
+RUN apk add --no-cache fontconfig font-dejavu && fc-cache -f
+
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static    ./.next/static
