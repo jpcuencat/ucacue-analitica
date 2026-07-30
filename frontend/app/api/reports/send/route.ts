@@ -7,8 +7,10 @@ import { getWaProfile } from "@/lib/db-users";
 import { runReport, type ReportResult } from "@/lib/report-runner";
 import {
   renderBarChartPNG,
+  renderHBarChartPNG,
   renderTextCardPNG,
   normalizarParaWhatsApp,
+  specDesdeTablaMarkdown,
   type VizSpec,
 } from "@/lib/chart-image";
 
@@ -99,10 +101,19 @@ export async function POST(req: Request) {
     const bruto = Buffer.from(body.imagePng.split(",")[1] ?? "", "base64");
     png = await normalizarParaWhatsApp(bruto); // null si la imagen es inválida
   }
+  if (!png && result.spec) {
+    png = renderBarChartPNG({ ...result.spec, titulo });
+  }
   if (!png) {
-    png = result.spec
-      ? renderBarChartPNG({ ...result.spec, titulo })
-      : renderTextCardPNG(titulo, result.texto);
+    // Sin gráfico: la tarjeta de texto dibuja bien las tablas cortas, pero una
+    // larga no cabe. En ese caso se grafica la propia tabla (barras
+    // horizontales, legibles con nombres largos de facultad o carrera).
+    const deTabla = specDesdeTablaMarkdown(result.texto);
+    const FILAS_QUE_CABEN = 8;
+    png =
+      deTabla && (deTabla.categorias?.length ?? 0) > FILAS_QUE_CABEN
+        ? renderHBarChartPNG(deTabla)
+        : renderTextCardPNG(titulo, result.texto);
   }
 
   const up = await uploadMedia(png);

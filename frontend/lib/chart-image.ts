@@ -184,6 +184,179 @@ export function renderTextCardPNG(titulo: string, cuerpo: string): Buffer {
   return canvas.toBuffer("image/png");
 }
 
+// Convierte a número una celda de tabla. Devuelve null si no es numérica o si
+// es un porcentaje: mezclar 474 con 30.6% en un mismo eje sería engañoso.
+function celdaNumerica(s: string): number | null {
+  if (!s || s.includes("%")) return null;
+  const t = s.replace(/[^\d-]/g, "");
+  if (!t) return null;
+  const v = Number(t);
+  return Number.isFinite(v) ? v : null;
+}
+
+// Extrae un VizSpec de la primera tabla markdown del texto. Se usa cuando la
+// respuesta trae un desglose demasiado largo para dibujarlo como tabla.
+export function specDesdeTablaMarkdown(texto: string): VizSpec | null {
+  const filas: string[][] = [];
+  for (const l of texto.split("\n")) {
+    if (esFilaTabla(l)) {
+      if (!esSeparadorTabla(l)) filas.push(celdas(l));
+    } else if (filas.length > 1) break; // solo la primera tabla
+  }
+  if (filas.length < 3) return null; // cabecera + 2 filas como mínimo
+  const cabecera = filas[0];
+  const cuerpo = filas.slice(1).filter((f) => f.some((c) => c));
+  const nCols = cabecera.length;
+
+  // Cada columna es numérica, de porcentaje o de texto. Los porcentajes se
+  // IGNORAN: no se grafican (otra escala) ni sirven como etiqueta.
+  const numericas: number[] = [];
+  const textuales: number[] = [];
+  const umbral = Math.ceil(cuerpo.length * 0.7);
+  for (let i = 0; i < nCols; i++) {
+    const pct = cuerpo.filter((f) => (f[i] ?? "").includes("%")).length;
+    if (pct >= umbral) continue; // columna de porcentaje → fuera
+    const n = cuerpo.filter((f) => celdaNumerica(f[i] ?? "") !== null).length;
+    if (n >= umbral) numericas.push(i);
+    else textuales.push(i);
+  }
+  if (!numericas.length || !textuales.length) return null;
+
+  // Las etiquetas juntan las columnas de texto. La primera suele venir vacía en
+  // las filas siguientes (una sede que agrupa varias facultades): se arrastra.
+  const arrastre: string[] = [];
+  const categorias = cuerpo.map((f) => {
+    const partes: string[] = [];
+    textuales.forEach((c, idx) => {
+      const v = (f[c] ?? "").trim();
+      if (v) arrastre[idx] = v;
+      if (arrastre[idx]) partes.push(arrastre[idx]);
+    });
+    return partes.join(" · ");
+  });
+
+  const series = numericas.slice(0, 2).map((c) => ({
+    nombre: cabecera[c] || "Valor",
+    valores: cuerpo.map((f) => celdaNumerica(f[c] ?? "") ?? 0),
+  }));
+
+  const ejeEtiqueta = cabecera[textuales[textuales.length - 1]] || "categoría";
+  return { titulo: `${series[0].nombre} por ${ejeEtiqueta.toLowerCase()}`, categorias, series };
+}
+
+// Barras HORIZONTALES (1-2 series): la forma legible cuando las etiquetas son
+// largas, como los nombres de facultad o carrera.
+export function renderHBarChartPNG(spec: VizSpec): Buffer {
+  const W = 1200;
+  const H = 628;
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, W, H);
+
+  const series = (spec.series ?? []).slice(0, 2).filter((s) => s?.valores);
+  let cats = (spec.categorias ?? []).map(String);
+  if (!cats.length || !series.length) return renderTextCardPNG(spec.titulo ?? "Reporte", "Sin datos para graficar.");
+
+  // Orden descendente por la primera serie y recorte a lo que cabe.
+  const orden = cats.map((_, i) => i).sort((a, b) => (series[0].valores[b] ?? 0) - (series[0].valores[a] ?? 0));
+  const MAX = 14;
+  const total = cats.length;
+  const usados = orden.slice(0, MAX);
+  cats = usados.map((i) => cats[i]);
+  const vals = series.map((s) => usados.map((i) => Number(s.valores[i]) || 0));
+
+  ctx.fillStyle = TEXT;
+  ctx.font = "bold 24px sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillText(truncate(spec.titulo ?? "Desglose", 62), 40, 28);
+
+  const mL = 430; // espacio para las etiquetas
+  const mR = 96;
+  const top = 78;
+  const bottom = total > MAX ? 82 : 60; // eje + leyenda + nota, sin encimarse
+  const plotW = W - mL - mR;
+  const plotH = H - top - bottom;
+  const maxV = Math.max(1, ...vals.flat());
+  const niceMax = niceCeil(maxV);
+
+  const filaH = plotH / cats.length;
+  const barH = Math.min(18, (filaH - 6) / series.length);
+
+  // Rejilla vertical + escala
+  ctx.textAlign = "center";
+  ctx.font = "12px sans-serif";
+  for (let k = 0; k <= 4; k++) {
+    const x = mL + (plotW * k) / 4;
+    ctx.strokeStyle = GRID;
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, top + plotH);
+    ctx.stroke();
+    ctx.fillStyle = AXIS;
+    ctx.fillText(String(Math.round((niceMax * k) / 4)), x, top + plotH + 8);
+  }
+
+  cats.forEach((c, i) => {
+    const yFila = top + i * filaH;
+    // Etiqueta
+    ctx.fillStyle = "#1e293b";
+    ctx.font = "13px sans-serif";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    let etq = c;
+    while (etq && ctx.measureText(etq).width > mL - 52) etq = etq.slice(0, -1);
+    if (etq !== c && etq.length > 1) etq = etq.slice(0, -1) + "…";
+    ctx.fillText(etq, mL - 14, yFila + filaH / 2);
+    // Barras
+    series.forEach((_, s) => {
+      const v = vals[s][i];
+      const w = (Math.max(0, v) / niceMax) * plotW;
+      const y = yFila + filaH / 2 - (series.length * barH) / 2 + s * barH;
+      ctx.fillStyle = COLORS[s % COLORS.length];
+      ctx.fillRect(mL, y, Math.max(1, w), Math.max(4, barH - 2));
+      ctx.fillStyle = TEXT;
+      ctx.font = "12px sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText(String(Math.round(v)), mL + w + 6, y + barH / 2 - 1);
+    });
+  });
+
+  // Eje vertical
+  ctx.strokeStyle = AXIS;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(mL, top);
+  ctx.lineTo(mL, top + plotH);
+  ctx.stroke();
+
+  // Leyenda
+  ctx.font = "13px sans-serif";
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  let lx = mL;
+  const yLeg = H - (total > MAX ? 42 : 22);
+  series.forEach((s, i) => {
+    ctx.fillStyle = COLORS[i % COLORS.length];
+    ctx.fillRect(lx, yLeg - 6, 12, 12);
+    ctx.fillStyle = TEXT;
+    const nombre = truncate(s.nombre, 26);
+    ctx.fillText(nombre, lx + 18, yLeg);
+    lx += 18 + ctx.measureText(nombre).width + 24;
+  });
+
+  // Nota honesta si se recortaron filas.
+  if (total > MAX) {
+    ctx.fillStyle = "#64748b";
+    ctx.font = "italic 13px sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(`Top ${MAX} de ${total} — el detalle completo está en el chat`, 40, H - 16);
+  }
+
+  return canvas.toBuffer("image/png");
+}
+
 // Renderiza un gráfico de barras agrupadas (1-3 series) a PNG.
 export function renderBarChartPNG(spec: VizSpec): Buffer {
   const W = 920;
