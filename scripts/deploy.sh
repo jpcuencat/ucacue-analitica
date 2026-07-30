@@ -113,10 +113,12 @@ scp "$LOCAL/frontend/app/api/admin/users/route.ts" \
     "$HOST:$REMOTE/frontend/app/api/admin/users/"
 
 # Envío a WhatsApp (on-demand por usuario)
-ssh "$HOST" "mkdir -p $REMOTE/frontend/app/api/reports/send $REMOTE/frontend/app/api/wa-recipients $REMOTE/frontend/app/api/wa/test"
+ssh "$HOST" "mkdir -p $REMOTE/frontend/app/api/reports/send $REMOTE/frontend/app/api/wa/test"
 scp "$LOCAL/frontend/app/api/reports/send/route.ts" "$HOST:$REMOTE/frontend/app/api/reports/send/"
-scp "$LOCAL/frontend/app/api/wa-recipients/route.ts" "$HOST:$REMOTE/frontend/app/api/wa-recipients/"
 scp "$LOCAL/frontend/app/api/wa/test/route.ts" "$HOST:$REMOTE/frontend/app/api/wa/test/"
+# El deploy copia archivos, no sincroniza: hay que borrar en el servidor lo que
+# se eliminó del repo, o el build fallaría compilando código huérfano.
+ssh "$HOST" "rm -rf $REMOTE/frontend/app/api/wa-recipients"
 
 ssh "$HOST" "mkdir -p $REMOTE/frontend/public"
 scp "$LOCAL/frontend/public/widget-demo.html" "$HOST:$REMOTE/frontend/public/"
