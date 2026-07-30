@@ -105,10 +105,8 @@ el resumen ejecutivo + el gráfico al número del propio usuario.
   la app; con un número propio verificado esa restricción desaparece.
 - **Auditoría**: cada envío queda en `wa_send_log`.
 
-`GET/POST/PATCH/DELETE /api/wa-recipients` y la tabla `wa_recipients` existen
-pero **hoy no los usa la interfaz** (quedaron de un diseño previo con selección
-de destinatarios); junto con `wa_reports` están reservados para los reportes
-programados, que aún no se implementan.
+Los reportes **programados** (una pregunta que se corre y se envía en un
+horario) todavía no están implementados.
 
 ## Administración de usuarios (`/admin`)
 

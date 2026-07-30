@@ -97,13 +97,6 @@ Envía la plantilla `hello_world` (siempre aprobada por Meta) a un número:
 `{ "to": "5939XXXXXXXX" }`. Sirve para validar credenciales sin depender de la
 plantilla propia. Se usa a mano (curl); ninguna pantalla lo llama.
 
-## /api/wa-recipients — destinatarios (no usado por la interfaz)
-
-CRUD sobre `wa_recipients`. Quedó de un diseño previo en el que se elegían
-destinatarios en un modal; hoy el envío va al teléfono del propio usuario, así
-que **ninguna pantalla lo consume**. Se mantiene junto con `wa_reports` para
-los reportes programados, aún no implementados.
-
 ## /api/lg/* — proxy al servidor LangGraph
 
 Rewrite de Next.js (`next.config.mjs`) hacia el LangGraph interno

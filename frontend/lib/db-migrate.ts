@@ -36,36 +36,10 @@ const SQL = `
   CREATE INDEX IF NOT EXISTS idx_login_attempts_lookup
     ON login_attempts (email, ip, attempted_at);
 
-  -- Envío de reportes a WhatsApp (Cloud API oficial).
-  -- Destinatarios autorizados: teléfono en E.164 sin '+' (solo dígitos).
-  CREATE TABLE IF NOT EXISTS wa_recipients (
-    id                UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
-    nombre            VARCHAR(200) NOT NULL,
-    telefono          VARCHAR(20)  UNIQUE NOT NULL,
-    activo            BOOLEAN      NOT NULL DEFAULT TRUE,
-    consentimiento_at TIMESTAMPTZ,
-    created_by        VARCHAR(255),
-    created_at        TIMESTAMPTZ  DEFAULT NOW()
-  );
-
-  -- Reportes programados: una pregunta que se corre y se envía en un horario.
-  CREATE TABLE IF NOT EXISTS wa_reports (
-    id                UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
-    nombre            VARCHAR(200) NOT NULL,
-    pregunta          TEXT         NOT NULL,
-    destinatarios     UUID[]       NOT NULL DEFAULT '{}',
-    cron              VARCHAR(100),
-    activo            BOOLEAN      NOT NULL DEFAULT TRUE,
-    ultima_ejecucion  TIMESTAMPTZ,
-    proxima_ejecucion TIMESTAMPTZ,
-    created_by        VARCHAR(255),
-    created_at        TIMESTAMPTZ  DEFAULT NOW()
-  );
-
-  -- Auditoría de cada envío (on-demand y programado).
+  -- Auditoría de cada envío de reporte por WhatsApp (Cloud API oficial).
+  -- El destino de cada envío es users.telefono; no hay lista de destinatarios.
   CREATE TABLE IF NOT EXISTS wa_send_log (
     id            BIGSERIAL   PRIMARY KEY,
-    report_id     UUID        REFERENCES wa_reports(id) ON DELETE SET NULL,
     pregunta      TEXT,
     telefono      VARCHAR(20) NOT NULL,
     estado        VARCHAR(20) NOT NULL,
