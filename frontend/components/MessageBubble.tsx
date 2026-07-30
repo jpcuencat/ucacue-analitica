@@ -54,7 +54,11 @@ export function MessageBubble({ message, chartData, canSend = false }: Props) {
     .replace(/\[\[viz:[^\]]*$/i, "")
     .trimEnd();
 
-  if (!text && role !== "tool") return null;
+  // Cuando el usuario pide solo el gráfico, el modelo puede responder ÚNICAMENTE
+  // con la directiva [[viz: ...]]; al ocultarla el texto queda vacío. En ese caso
+  // NO descartamos la burbuja: hay que mostrar el gráfico igual.
+  const hasChart = role === "assistant" && (chartData?.length ?? 0) > 0;
+  if (!text && !hasChart) return null;
   if (role === "tool" && !text) return null;
 
   const isJson = text.trim().startsWith("{") || text.trim().startsWith("[");
@@ -64,16 +68,18 @@ export function MessageBubble({ message, chartData, canSend = false }: Props) {
       <div className="bubble__role">{ROLE_LABEL[role]}</div>
       {isJson ? (
         <pre className="bubble__json">{text}</pre>
-      ) : (
+      ) : text ? (
         <div className="bubble__content">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {text || "(sin contenido)"}
-          </ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+        </div>
+      ) : null}
+      {role === "assistant" && chartData && chartData.length > 0 && (
+        <div>
+          {chartData.map((cd, i) => (
+            <ChartBlock key={i} {...cd} />
+          ))}
         </div>
       )}
-      {role === "assistant" && chartData?.map((cd, i) => (
-        <ChartBlock key={i} {...cd} />
-      ))}
       {role === "assistant" && canSend && text.trim().length > 40 && (
         <div className="bubble__actions">
           <button
