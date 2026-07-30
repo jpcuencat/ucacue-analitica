@@ -5,13 +5,19 @@ import { waConfigurado, uploadMedia, sendReportTemplate } from "@/lib/whatsapp";
 import { logSend, normalizarTelefono } from "@/lib/wa-db";
 import { getWaProfile } from "@/lib/db-users";
 import { runReport, type ReportResult } from "@/lib/report-runner";
-import { renderBarChartPNG, renderTextCardPNG, type VizSpec } from "@/lib/chart-image";
+import {
+  renderBarChartPNG,
+  renderTextCardPNG,
+  normalizarParaWhatsApp,
+  type VizSpec,
+} from "@/lib/chart-image";
 
 type Body = {
   pregunta?: string;
   texto?: string; // respuesta ya calculada en el cliente (on-demand)
   spec?: VizSpec | null;
   titulo?: string;
+  imagePng?: string | null; // data URL del gráfico capturado del chat (recharts)
 };
 
 // Las variables de plantilla de WhatsApp no admiten saltos de línea ni tabs;
@@ -84,10 +90,20 @@ export async function POST(req: Request) {
   const titulo = body.titulo ?? result.spec?.titulo ?? "Reporte de Analítica UCACUE";
   const cuerpo = resumenParaWhatsApp(result.texto) || "Reporte de analítica académica.";
 
-  // Imagen: el gráfico si hay spec; si no, una tarjeta de texto.
-  const png = result.spec
-    ? renderBarChartPNG({ ...result.spec, titulo })
-    : renderTextCardPNG(titulo, result.texto);
+  // Imagen, por prioridad: (1) el gráfico capturado del chat (recharts, el más
+  // bonito) SIEMPRE normalizado —la captura llega en RGBA vertical y WhatsApp
+  // necesita fondo opaco y proporción horizontal—, (2) el render canvas del
+  // servidor si hay spec, (3) tarjeta de texto.
+  let png: Buffer | null = null;
+  if (body.imagePng && body.imagePng.startsWith("data:image/")) {
+    const bruto = Buffer.from(body.imagePng.split(",")[1] ?? "", "base64");
+    png = await normalizarParaWhatsApp(bruto); // null si la imagen es inválida
+  }
+  if (!png) {
+    png = result.spec
+      ? renderBarChartPNG({ ...result.spec, titulo })
+      : renderTextCardPNG(titulo, result.texto);
+  }
 
   const up = await uploadMedia(png);
   if (!up.ok) return NextResponse.json({ error: `No se pudo subir la imagen: ${up.error}` }, { status: 502 });

@@ -1,4 +1,4 @@
-import { createCanvas } from "@napi-rs/canvas";
+import { createCanvas, loadImage } from "@napi-rs/canvas";
 
 // Especificación de datos a graficar (misma forma que produce el frontend).
 export type VizSpec = {
@@ -23,6 +23,31 @@ function niceCeil(v: number): number {
 
 function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
+// Normaliza una imagen cualquiera (p.ej. la captura del gráfico del chat) al
+// formato que WhatsApp espera en el header de plantilla: fondo BLANCO OPACO (la
+// captura del navegador llega en RGBA con alfa) y proporción horizontal 1.91:1
+// recomendada por Meta. La imagen se escala completa y se centra, sin recortar.
+// Si algo falla, devuelve null para que el llamador use su respaldo.
+export async function normalizarParaWhatsApp(png: Buffer | Uint8Array): Promise<Buffer | null> {
+  try {
+    const img = await loadImage(png);
+    const W = 1200;
+    const H = 628; // 1200/628 ≈ 1.91:1
+    const canvas = createCanvas(W, H);
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff"; // aplana el alfa
+    ctx.fillRect(0, 0, W, H);
+    const pad = 16;
+    const escala = Math.min((W - pad * 2) / img.width, (H - pad * 2) / img.height);
+    const w = img.width * escala;
+    const h = img.height * escala;
+    ctx.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
+    return canvas.toBuffer("image/png");
+  } catch {
+    return null;
+  }
 }
 
 // Tarjeta de texto: imagen de respaldo cuando la respuesta no tiene gráfico

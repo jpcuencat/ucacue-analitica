@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { toPng } from "html-to-image";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AnyMessage } from "@/lib/types";
@@ -44,6 +45,7 @@ type WaState = "idle" | "sending" | "sent" | "error";
 export function MessageBubble({ message, chartData, canSend = false }: Props) {
   const [waState, setWaState] = useState<WaState>("idle");
   const [waMsg, setWaMsg] = useState<string>("");
+  const chartRef = useRef<HTMLDivElement>(null);
   const role = roleOf(message);
   // Ocultar las directivas [[vizdata: {...}]] y [[viz: ...]] del texto mostrado
   // (completas, o truncadas mientras llega el streaming).
@@ -74,7 +76,7 @@ export function MessageBubble({ message, chartData, canSend = false }: Props) {
         </div>
       ) : null}
       {role === "assistant" && chartData && chartData.length > 0 && (
-        <div>
+        <div ref={chartRef}>
           {chartData.map((cd, i) => (
             <ChartBlock key={i} {...cd} />
           ))}
@@ -89,11 +91,28 @@ export function MessageBubble({ message, chartData, canSend = false }: Props) {
               setWaState("sending");
               setWaMsg("");
               const spec = chartData && chartData.length ? toVizSpec(chartData[0]) : null;
+              // Captura el gráfico TAL CUAL se ve en el chat (recharts) como PNG.
+              // Si falla, el servidor cae al render canvas (spec) o tarjeta de texto.
+              let imagePng: string | null = null;
+              if (chartRef.current) {
+                try {
+                  // width/height explícitos: sin esto la leyenda de recharts,
+                  // que desborda el contenedor, sale recortada.
+                  const el = chartRef.current;
+                  imagePng = await toPng(el, {
+                    pixelRatio: 2,
+                    backgroundColor: "#ffffff",
+                    cacheBust: true,
+                    width: el.scrollWidth,
+                    height: el.scrollHeight + 8,
+                  });
+                } catch { /* captura falló → fallback en el servidor */ }
+              }
               try {
                 const res = await fetch("/api/reports/send", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ texto: text, spec, titulo: spec?.titulo }),
+                  body: JSON.stringify({ texto: text, spec, titulo: spec?.titulo, imagePng }),
                 });
                 const body = await res.json().catch(() => ({}));
                 if (!res.ok || !body.ok) {
