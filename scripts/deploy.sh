@@ -16,8 +16,22 @@ if [ -z "$HOST" ] || [ -z "$REMOTE" ]; then
   exit 1
 fi
 
+# Los archivos de entorno del SERVIDOR no se sobrescriben: los locales apuntan
+# a otra base (DATABASE_URL de desarrollo) y pisarlos rompe producción. Se
+# verifica que existan; en un servidor nuevo hay que copiarlos a mano una vez.
+echo "=== Verificando entorno en el servidor ==="
+for f in ".env" "frontend/.env.local"; do
+  if ! ssh "$HOST" "test -f $REMOTE/$f"; then
+    echo "ERROR: falta $REMOTE/$f en el servidor."
+    echo "       Cópialo manualmente la primera vez (revisa DATABASE_URL, JWT_SECRET,"
+    echo "       AUTH_USERS, WA_*, CLAVE_INICIAL_DEFAULT, ADMIN_EMAILS) y reintenta."
+    exit 1
+  fi
+done
+echo "  ok: .env y frontend/.env.local presentes (no se sobrescriben)"
+
 echo "=== Subiendo archivos ==="
-scp "$LOCAL/docker-compose.yml" "$LOCAL/.env" "$HOST:$REMOTE/"
+scp "$LOCAL/docker-compose.yml" "$HOST:$REMOTE/"
 
 # Backend Python (LangGraph)
 scp "$LOCAL/requirements.txt" \
@@ -37,7 +51,6 @@ scp "$LOCAL/frontend/middleware.ts" \
     "$LOCAL/frontend/package.json" \
     "$LOCAL/frontend/pnpm-lock.yaml" \
     "$LOCAL/frontend/Dockerfile" \
-    "$LOCAL/frontend/.env.local" \
     "$HOST:$REMOTE/frontend/"
 
 scp "$LOCAL/frontend/app/globals.css" \
