@@ -53,13 +53,25 @@ Requires a `.env` (gitignored) with:
 - `MODEL_NAME` — optional, defaults to `gpt-5-mini`.
 - `LOG_LEVEL` — optional, defaults to `INFO`.
 
-Frontend (`frontend/.env.local`): `JWT_SECRET`, `AUTH_USERS`, `DATABASE_URL`.
+Frontend (`frontend/.env.local`): `JWT_SECRET`, `DATABASE_URL`, `AUTH_USERS`
+(solo semilla para `seed-users.js`; la fuente de verdad del login es la tabla
+`users`), `ADMIN_EMAILS` (acceso a `/admin`), `CLAVE_INICIAL_DEFAULT` (clave que
+asignan las altas/reseteos) y las de WhatsApp: `WA_PHONE_NUMBER_ID`, `WA_TOKEN`,
+`WA_TEMPLATE_NAME`, `WA_TEMPLATE_LANG`, `WA_API_VERSION`.
 Producción/deploy (`.env`): `POSTGRES_PASSWORD`, `TUNNEL_TOKEN`, `DEPLOY_HOST`,
 `DEPLOY_PATH`, `PUBLIC_API_URL`.
+
+`scripts/deploy.sh` **no copia** los archivos de entorno al servidor (los
+locales apuntan a otra base y romperían producción): verifica que existan y
+aborta si faltan.
 
 ## Architecture
 
 **Production flow**: Next.js widget (iframe) → `/api/lg` proxy → LangGraph server (`langgraph_server.py`, graph llm↔tools + playbook injected per turn) → tools via injected port → UCACUE API (Azure). Users/threads metadata in PostgreSQL; conversation checkpoints in the `langgraph-data` Docker volume (ADR-001).
+
+**Envío a WhatsApp** (`frontend/lib/whatsapp.ts` + `app/api/reports/send/route.ts`): el botón de cada respuesta manda resumen + gráfico al WhatsApp del **propio** usuario (`users.telefono`), y solo aparece si `users.wa_view = TRUE` (default `FALSE`). La imagen es la captura del gráfico del chat (`html-to-image`) que el servidor normaliza con `normalizarParaWhatsApp` (fondo opaco + 1.91:1, formato del header de plantilla); si falla, cae al render `@napi-rs/canvas` (`lib/chart-image.ts`). Las variables de plantilla de Meta **no admiten saltos de línea** → el texto se colapsa a una línea (máx. 900 chars). Auditoría en `wa_send_log`. `/api/wa-recipients` y las tablas `wa_recipients`/`wa_reports` existen pero **no las usa la UI** (reservadas para los reportes programados, sin implementar).
+
+**Administración de usuarios** (`app/admin/` + `app/api/admin/users/route.ts`): alta, reseteo y baja del login sin SSH, restringido a `ADMIN_EMAILS`. Asigna `CLAVE_INICIAL_DEFAULT` con `must_change_password = TRUE`. Ojo: `lib/auth.ts` solo cae al fallback `AUTH_USERS` si la DB **lanza excepción** — un usuario ausente de la tabla `users` simplemente no entra.
 
 **Clean Architecture layers** (ADR-002): `src/domain/` (contracts, normalization, `PuertoDatosAcademicos` Protocol — pure) ← `src/tools/` (7 `@tool` use cases, consume the injected port, Result pattern) ← `src/infrastructure/` (`AdaptadorApiUcacue` HTTP real, `AdaptadorInMemory` for tests). Composition Root: `langgraph_server._build_graph()`.
 

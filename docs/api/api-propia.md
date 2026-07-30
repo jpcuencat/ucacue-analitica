@@ -52,6 +52,58 @@ curl -b "ucacue_session=<jwt>" -X POST http://localhost:3000/api/threads \
 - **Response** `200`: `{ "ok": true }`.
 - **Errores**: `401` sin sesión.
 
+## POST /api/reports/send — enviar la respuesta a WhatsApp
+
+Manda el resumen ejecutivo + el gráfico al WhatsApp **del propio usuario**
+(no se eligen destinatarios: el destino es `users.telefono`).
+
+- **Auth**: cookie de sesión **y** `users.wa_view = TRUE`.
+- **Request** (JSON): `texto` y `spec` son lo ya calculado en el cliente; si
+  no se envían, se usa `pregunta` y el servidor corre el agente.
+
+```json
+{
+  "texto": "A la fecha … 💡 Lectura ejecutiva: …",
+  "spec": { "titulo": "…", "categorias": ["…"], "series": [{ "nombre": "Inscritos", "valores": [1] }] },
+  "titulo": "Inscritos por facultad",
+  "imagePng": "data:image/png;base64,…",
+  "pregunta": "alternativa a texto+spec"
+}
+```
+
+- **Response** `200`: `{ "ok": true, "telefono": "5939…", "messageId": "wamid.…" }`.
+- **Imagen**: si llega `imagePng` (captura del gráfico del chat) se normaliza a
+  fondo opaco y 1.91:1; si falla, se dibuja en el servidor desde `spec`; si no
+  hay `spec`, se manda una tarjeta de texto.
+- **Errores**: `401` sin sesión · `403` si `wa_view` es falso · `400` si el
+  usuario no tiene teléfono válido o falta `texto`/`pregunta` · `502` si Meta
+  rechaza la subida o el envío · `503` si faltan `WA_PHONE_NUMBER_ID`/`WA_TOKEN`.
+- Cada intento se registra en `wa_send_log`.
+
+## /api/admin/users — administración de usuarios
+
+Respaldo de la pantalla `/admin`. **Auth**: cookie de sesión y correo incluido
+en `ADMIN_EMAILS`; cualquier otro usuario recibe `403`.
+
+| Método | Uso |
+|---|---|
+| `GET` | lista de usuarios (correo, `must_change_password`, fecha de alta) |
+| `POST` | alta con `{ "email": "…" }` → asigna `CLAVE_INICIAL_DEFAULT` y `must_change_password = TRUE` |
+| `PATCH` | reseteo de clave de `{ "email": "…" }` a la clave inicial |
+
+## POST /api/wa/test — smoke test de WhatsApp
+
+Envía la plantilla `hello_world` (siempre aprobada por Meta) a un número:
+`{ "to": "5939XXXXXXXX" }`. Sirve para validar credenciales sin depender de la
+plantilla propia. Se usa a mano (curl); ninguna pantalla lo llama.
+
+## /api/wa-recipients — destinatarios (no usado por la interfaz)
+
+CRUD sobre `wa_recipients`. Quedó de un diseño previo en el que se elegían
+destinatarios en un modal; hoy el envío va al teléfono del propio usuario, así
+que **ninguna pantalla lo consume**. Se mantiene junto con `wa_reports` para
+los reportes programados, aún no implementados.
+
 ## /api/lg/* — proxy al servidor LangGraph
 
 Rewrite de Next.js (`next.config.mjs`) hacia el LangGraph interno
