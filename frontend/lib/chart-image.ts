@@ -52,9 +52,29 @@ export async function normalizarParaWhatsApp(png: Buffer | Uint8Array): Promise<
 
 // Tarjeta de texto: imagen de respaldo cuando la respuesta no tiene gráfico
 // (la plantilla de WhatsApp siempre necesita una imagen en el header).
+// Quita el markdown inline: **negrita**, *cursiva*, `código`, encabezados y
+// viñetas. En una imagen esos caracteres no aportan nada y ensucian el texto.
+function sinMarkdown(s: string): string {
+  return s
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/(^|\s)\*(\S(?:.*?\S)?)\*(?=\s|$)/g, "$1$2")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^#{1,6}\s*/, "")
+    .replace(/^\s*[-*]\s+/, "• ")
+    .trim();
+}
+
+const esFilaTabla = (l: string) => /^\s*\|.*\|\s*$/.test(l);
+const esSeparadorTabla = (l: string) => /^\s*\|[\s:|-]+\|\s*$/.test(l);
+const celdas = (l: string) =>
+  l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => sinMarkdown(c));
+
+// Tarjeta de texto: imagen de respaldo cuando la respuesta no tiene gráfico.
+// Las tablas markdown se dibujan como TABLA (no como texto con pipes), que es
+// el caso típico de un desglose por carrera o facultad.
 export function renderTextCardPNG(titulo: string, cuerpo: string): Buffer {
-  const W = 920;
-  const H = 520;
+  const W = 1200;
+  const H = 628; // 1.91:1, la proporción del header de plantilla de WhatsApp
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext("2d");
   ctx.fillStyle = "#ffffff";
@@ -62,39 +82,105 @@ export function renderTextCardPNG(titulo: string, cuerpo: string): Buffer {
   ctx.fillStyle = "#2563eb";
   ctx.fillRect(0, 0, W, 8); // franja superior
 
-  const pad = 56;
-  ctx.fillStyle = TEXT;
-  ctx.font = "bold 26px sans-serif";
+  const pad = 48;
+  const maxW = W - pad * 2;
+  const limiteY = H - 34;
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
-  ctx.fillText(truncate(titulo, 46), pad, 40);
 
-  // Cuerpo con ajuste de línea por palabras.
-  ctx.font = "18px sans-serif";
-  ctx.fillStyle = "#1e293b";
-  const maxW = W - pad * 2;
-  const lineH = 27;
-  let y = 96;
-  for (const rawLine of cuerpo.split("\n")) {
-    let line = "";
-    for (const word of rawLine.split(/\s+/)) {
-      const probe = line ? `${line} ${word}` : word;
-      if (ctx.measureText(probe).width > maxW && line) {
-        ctx.fillText(line, pad, y);
-        y += lineH;
-        line = word;
-      } else {
-        line = probe;
-      }
-      if (y > H - 60) break;
+  ctx.fillStyle = TEXT;
+  ctx.font = "bold 27px sans-serif";
+  ctx.fillText(truncate(sinMarkdown(titulo), 58), pad, 34);
+  let y = 88;
+
+  // Agrupa las líneas en bloques: tabla (filas contiguas) o párrafo.
+  const lineas = cuerpo.split("\n");
+  type Bloque = { tipo: "tabla"; filas: string[][] } | { tipo: "texto"; texto: string };
+  const bloques: Bloque[] = [];
+  for (const raw of lineas) {
+    if (esFilaTabla(raw)) {
+      if (esSeparadorTabla(raw)) continue; // |---|---:| no se dibuja
+      const ultimo = bloques[bloques.length - 1];
+      if (ultimo?.tipo === "tabla") ultimo.filas.push(celdas(raw));
+      else bloques.push({ tipo: "tabla", filas: [celdas(raw)] });
+    } else {
+      const t = sinMarkdown(raw);
+      if (t) bloques.push({ tipo: "texto", texto: t });
     }
-    if (y > H - 60) {
-      ctx.fillText(line + " …", pad, y);
-      break;
-    }
-    ctx.fillText(line, pad, y);
-    y += lineH;
   }
+
+  const cortado = () => {
+    ctx.fillStyle = "#64748b";
+    ctx.font = "italic 16px sans-serif";
+    ctx.fillText("… (respuesta completa en el chat)", pad, Math.min(y, limiteY));
+  };
+
+  for (const b of bloques) {
+    if (y > limiteY - 24) { cortado(); break; }
+
+    if (b.tipo === "texto") {
+      ctx.font = "17px sans-serif";
+      ctx.fillStyle = "#1e293b";
+      let linea = "";
+      for (const palabra of b.texto.split(/\s+/)) {
+        const probe = linea ? `${linea} ${palabra}` : palabra;
+        if (ctx.measureText(probe).width > maxW && linea) {
+          ctx.fillText(linea, pad, y);
+          y += 25;
+          linea = palabra;
+          if (y > limiteY - 24) break;
+        } else linea = probe;
+      }
+      if (linea && y <= limiteY - 24) { ctx.fillText(linea, pad, y); y += 25; }
+      y += 6;
+      continue;
+    }
+
+    // ── Tabla ──────────────────────────────────────────────────────────────
+    const filas = b.filas;
+    const nCols = Math.max(...filas.map((f) => f.length));
+    ctx.font = "bold 16px sans-serif";
+    const anchos = Array.from({ length: nCols }, (_, i) =>
+      Math.max(...filas.map((f) => ctx.measureText(f[i] ?? "").width)) + 26,
+    );
+    // Si excede el ancho disponible, se reparte proporcionalmente.
+    const total = anchos.reduce((a, b2) => a + b2, 0);
+    if (total > maxW) {
+      const k = maxW / total;
+      for (let i = 0; i < anchos.length; i++) anchos[i] *= k;
+    }
+    const filaH = 30;
+
+    filas.forEach((fila, idx) => {
+      if (y > limiteY - filaH) return;
+      const esCabecera = idx === 0;
+      if (esCabecera) {
+        ctx.fillStyle = "#eef2f7";
+        ctx.fillRect(pad, y - 4, Math.min(total, maxW), filaH);
+      }
+      let x = pad;
+      fila.forEach((c, i) => {
+        ctx.fillStyle = esCabecera ? TEXT : "#1e293b";
+        ctx.font = `${esCabecera ? "bold " : ""}16px sans-serif`;
+        // Recorta la celda al ancho de su columna.
+        let txt = c;
+        while (txt && ctx.measureText(txt).width > anchos[i] - 18) txt = txt.slice(0, -1);
+        if (txt !== c && txt.length > 1) txt = txt.slice(0, -1) + "…";
+        ctx.fillText(txt, x + 9, y + 2);
+        x += anchos[i];
+      });
+      y += filaH;
+      ctx.strokeStyle = GRID;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pad, y - 4);
+      ctx.lineTo(pad + Math.min(total, maxW), y - 4);
+      ctx.stroke();
+    });
+    y += 12;
+    if (y > limiteY - 24) { cortado(); break; }
+  }
+
   return canvas.toBuffer("image/png");
 }
 
